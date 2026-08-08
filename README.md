@@ -46,14 +46,20 @@ export SS_PROJECT=<uuid>
 ```bash
 secretserver                          # print usage
 
-# List (metadata only — no secret values)
+# Switch project (PAT: name or UUID; machine token: UUID only)
+secretserver project                  # show current
+secretserver project ios-app
+secretserver project 31a70875-7d6a-40a7-a315-751f8a7ee38f
+
+# List (table by default; metadata only — no secret values)
 secretserver get secrets
 secretserver get secrets -l api       # filter by key/note substring
-secretserver get secrets -o wide      # table
+secretserver get secrets -o json      # JSON if needed
 
-# One secret
-secretserver get secret API_KEY                 # JSON (includes value)
-secretserver get secret API_KEY -o value        # value only
+# One secret (table by default)
+secretserver get secret API_KEY                 # table (value truncated in table)
+secretserver get secret API_KEY -o value        # value only (scripts)
+secretserver get secret API_KEY -o json         # full JSON
 secretserver get secret API_KEY -o name         # key name only
 
 # Create / update
@@ -76,12 +82,13 @@ Aliases: `create` / `set` → `apply`.
 
 | Value | Meaning |
 |-------|---------|
-| `json` | Pretty JSON (default) |
+| `table` | Human table (**default**) |
+| `json` | Pretty JSON |
 | `value` | Plaintext secret only (for scripts) |
 | `name` | Resource name only |
-| `wide` | Table for `get secrets` |
+| `wide` | Alias of `table` |
 
-`apply` success JSON **omits** the secret value so it is not echoed to the terminal.
+`apply` / `delete` success tables **omit** the secret value.
 
 ---
 
@@ -200,6 +207,7 @@ export REQUIRED_KEY="$val"
 |------|---------|
 | Usage | `secretserver` |
 | Login | `secretserver login --url … --token … --project …` |
+| Switch project | `secretserver project ios-app` |
 | List keys | `secretserver get secrets` |
 | Get value (script) | `secretserver get secret KEY -o value` |
 | Set from stdin | `… \| secretserver apply secret KEY --from-file=-` |

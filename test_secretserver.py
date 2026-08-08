@@ -70,7 +70,7 @@ class TestCLI(unittest.TestCase):
 
         def capture(method, path, *, body=None, query=None):
             calls.append((method, path, query))
-            return {"items": [{"key": "K", "kind": "plain", "note": ""}]}
+            return {"items": [{"key": "K", "kind": "plain", "note": "n", "expires_at": None}]}
 
         with mock.patch.object(ss, "_request", side_effect=capture):
             ss._save_config("http://h", "ss_t", PID)
@@ -79,7 +79,18 @@ class TestCLI(unittest.TestCase):
                 ss.main(["get", "secrets", "-l", "api"])
         self.assertEqual(calls[0][0], "GET")
         self.assertEqual(calls[0][2], {"meta": "1", "q": "api"})
-        self.assertIn("K", buf.getvalue())
+        out = buf.getvalue()
+        self.assertIn("KEY", out)
+        self.assertIn("K", out)
+
+    def test_project_switch(self):
+        ss._save_config("http://h", "ss_t", PID)
+        with mock.patch.object(ss, "_request", return_value={"items": []}):
+            buf = io.StringIO()
+            with mock.patch("sys.stdout", buf):
+                ss.main(["project", "22222222-2222-2222-2222-222222222222"])
+        self.assertIn("22222222-2222-2222-2222-222222222222", self.cfg_path.read_text())
+        self.assertIn("PROJECT", buf.getvalue())
 
     def test_get_secret_value_only(self):
         with mock.patch.object(
