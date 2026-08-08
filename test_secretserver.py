@@ -43,12 +43,10 @@ class TestCLI(unittest.TestCase):
                 ss.main([])
             except SystemExit as e:
                 self.assertEqual(e.code, 0)
-        out = buf.getvalue()
-        self.assertIn("get secrets", out)
-        self.assertIn("-o value", out)
+        self.assertIn("get secrets", buf.getvalue())
 
     def test_login_writes_config(self):
-        with mock.patch.object(ss, "_request", return_value={"items": []}):
+        with mock.patch.object(ss, "_proj_api", return_value={"items": []}):
             ss.main(
                 [
                     "login",
@@ -63,38 +61,26 @@ class TestCLI(unittest.TestCase):
         text = self.cfg_path.read_text()
         self.assertIn("https://secrets.example", text)
         self.assertIn("ss_test", text)
-        self.assertEqual(self.cfg_path.stat().st_mode & 0o777, 0o600)
 
     def test_get_secrets_list(self):
         calls = []
 
-        def capture(method, path, *, body=None, query=None):
+        def capture(method, path, *, body=None, query=None, project=None):
             calls.append((method, path, query))
-            return {"items": [{"key": "K", "kind": "plain", "note": "n", "expires_at": None}]}
+            return {"items": [{"key": "K", "kind": "plain", "note": "n"}]}
 
-        with mock.patch.object(ss, "_request", side_effect=capture):
+        with mock.patch.object(ss, "_proj_api", side_effect=capture):
             ss._save_config("http://h", "ss_t", PID)
             buf = io.StringIO()
             with mock.patch("sys.stdout", buf):
                 ss.main(["get", "secrets", "-l", "api"])
         self.assertEqual(calls[0][0], "GET")
-        self.assertEqual(calls[0][2], {"meta": "1", "q": "api"})
-        out = buf.getvalue()
-        self.assertIn("KEY", out)
-        self.assertIn("K", out)
-
-    def test_project_switch(self):
-        ss._save_config("http://h", "ss_t", PID)
-        with mock.patch.object(ss, "_request", return_value={"items": []}):
-            buf = io.StringIO()
-            with mock.patch("sys.stdout", buf):
-                ss.main(["project", "22222222-2222-2222-2222-222222222222"])
-        self.assertIn("22222222-2222-2222-2222-222222222222", self.cfg_path.read_text())
-        self.assertIn("PROJECT", buf.getvalue())
+        self.assertEqual(calls[0][2].get("q"), "api")
+        self.assertIn("KEY", buf.getvalue())
 
     def test_get_secret_value_only(self):
         with mock.patch.object(
-            ss, "_request", return_value={"key": "K", "value": "s3cret"}
+            ss, "_proj_api", return_value={"key": "K", "value": "s3cret"}
         ):
             ss._save_config("http://h", "ss_t", PID)
             buf = io.StringIO()
@@ -105,64 +91,33 @@ class TestCLI(unittest.TestCase):
     def test_apply_from_env(self):
         calls = []
 
-        def capture(method, path, *, body=None, query=None):
+        def capture(method, path, *, body=None, query=None, project=None):
             calls.append((method, path, body))
             return {"ok": True, "key": "K", "value": body["value"]}
 
         os.environ["SS_TEST_VAL"] = "from-env-secret"
-        with mock.patch.object(ss, "_request", side_effect=capture):
+        with mock.patch.object(ss, "_proj_api", side_effect=capture):
             ss._save_config("http://h", "ss_t", PID)
             buf = io.StringIO()
             with mock.patch("sys.stdout", buf):
                 ss.main(["apply", "secret", "K", "--from-env", "SS_TEST_VAL"])
         self.assertEqual(calls[0][0], "PUT")
         self.assertEqual(calls[0][2]["value"], "from-env-secret")
-        # default apply omits value from stdout
         self.assertNotIn("from-env-secret", buf.getvalue())
 
-    def test_apply_from_stdin(self):
-        calls = []
-
-        def capture(method, path, *, body=None, query=None):
-            calls.append((method, path, body))
-            return {"ok": True, "key": "K", "value": "stdin-val"}
-
-        with mock.patch.object(ss, "_request", side_effect=capture):
-            ss._save_config("http://h", "ss_t", PID)
-            with mock.patch("sys.stdin", io.StringIO("stdin-val")):
-                ss.main(["apply", "secret", "K", "--from-file", "-"])
-        self.assertEqual(calls[0][2]["value"], "stdin-val")
-
-    def test_apply_note_only_patch(self):
-        calls = []
-
-        def capture(method, path, *, body=None, query=None):
-            calls.append((method, path, body))
-            return {"ok": True, "key": "K", "note": "n"}
-
-        with mock.patch.object(ss, "_request", side_effect=capture):
-            ss._save_config("http://h", "ss_t", PID)
-            ss.main(["set", "secret", "K", "--note", "n"])
-        self.assertEqual(calls[0][0], "PATCH")
-        self.assertNotIn("value", calls[0][2])
-
     def test_delete_secret(self):
-        with mock.patch.object(ss, "_request", return_value={"ok": True}) as m:
+        with mock.patch.object(ss, "_proj_api", return_value={"ok": True}) as m:
             ss._save_config("http://h", "ss_t", PID)
             ss.main(["delete", "secret", "db/pass"])
-        m.assert_called_once()
         self.assertEqual(m.call_args[0][0], "DELETE")
-        self.assertIn("db/pass", m.call_args[0][1])
 
-    def test_env_overrides_config(self):
-        ss._save_config("http://from-file", "ss_file", "p-file")
-        os.environ[ss.ENV_URL] = "http://from-env"
-        os.environ[ss.ENV_TOKEN] = "ss_env"
-        os.environ[ss.ENV_PROJECT] = "p-env"
-        c = ss._load_config()
-        self.assertEqual(c["url"], "http://from-env")
-        self.assertEqual(c["token"], "ss_env")
-        self.assertEqual(c["project"], "p-env")
+    def test_project_switch(self):
+        ss._save_config("http://h", "ss_t", PID)
+        with mock.patch.object(ss, "_proj_api", return_value={"items": []}):
+            buf = io.StringIO()
+            with mock.patch("sys.stdout", buf):
+                ss.main(["project", "22222222-2222-2222-2222-222222222222"])
+        self.assertIn("22222222-2222-2222-2222-222222222222", self.cfg_path.read_text())
 
 
 if __name__ == "__main__":

@@ -284,18 +284,68 @@ export REQUIRED_KEY="$val"
 
 ---
 
+## Org & admin (PAT required)
+
+Teams, projects, members, tokens, trash, users, and audit need a **`pat_…`** token.
+Machine tokens (`ss_…`) only manage secrets in one project.
+
+```bash
+# Teams
+secretserver get teams
+secretserver get team Platform
+secretserver create team NewTeam
+secretserver delete team NewTeam
+secretserver get members --team Platform
+secretserver create member bob@example.com --team Platform --role member
+secretserver delete member bob@example.com --team Platform
+secretserver transfer team Platform --email alice@example.com
+
+# Projects
+secretserver get projects
+secretserver get project ios-app
+secretserver create project my-app --team Platform
+secretserver delete project my-app
+secretserver get members              # current project
+secretserver create member dave@example.com --role write
+
+# Machine tokens (current project)
+secretserver get tokens
+secretserver create token ci --role write          # prints ss_… once on stderr
+secretserver delete token <token-uuid>
+
+# Trash
+secretserver get trash
+secretserver restore trash <secret-uuid>
+secretserver delete trash <secret-uuid>            # permanent purge
+
+# Audit / users (global admin PAT)
+secretserver get users
+secretserver get users -l alice
+secretserver get audit                            # project secret audit
+secretserver get audit --source org               # org audit (admin)
+secretserver get audit --source secret            # global secret audit (admin)
+secretserver get audit --source access            # access review (admin)
+
+# Secret history
+secretserver get history API_KEY
+```
+
+Server settings (SMTP, LDAP, OIDC, banners, etc.) are **not** exposed in the CLI.
+
 ## Quick reference
 
 | Task | Command |
 |------|---------|
 | Usage | `secretserver` |
 | Login | `secretserver login --url … --token … --project …` |
-| Show / switch project | `secretserver project [name\|uuid]` |
-| List keys (table) | `secretserver get secrets` |
-| Get value (script) | `secretserver get secret KEY -o value` |
-| Set from stdin | `… \| secretserver apply secret KEY --from-file=-` |
-| Set from env | `secretserver apply secret KEY --from-env=VAR` |
-| Delete | `secretserver delete secret KEY` |
-| List projects (PAT) | `secretserver get projects` |
+| Switch project | `secretserver project [name\|uuid]` |
+| List / get secrets | `get secrets` / `get secret KEY` |
+| Script value | `get secret KEY -o value` |
+| Apply secret | `apply secret KEY --from-env=V` |
+| Teams / projects | `get teams` / `create project N --team T` |
+| Members | `create member email --team T --role member` |
+| Tokens | `create token NAME --role write` |
+| Trash | `get trash` / `restore trash ID` |
+| Admin users / audit | `get users` / `get audit --source access` |
 
-Server API: `secretserver` repo → `docs/api.md`.
+Server API: `secretserver` repo → `docs/api.md` + `/eso/v1` management routes.
