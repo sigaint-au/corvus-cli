@@ -1,51 +1,44 @@
 # secretserver-cli
 
-CLI for **Sigaint Secret Server** machine API (`/eso/v1`). Stdlib Python only; RHEL 9+.
+CLI for **Sigaint Secret Server** unified secret API (`/eso/v1`).  
+Stdlib Python only; RHEL 9+.
 
 API contract: sibling repo `secretserver` → [docs/api.md](../secretserver/docs/api.md).
 
 ## Install
 
 ```bash
-# from source
 sudo install -m 0755 secretserver /usr/bin/secretserver
-
-# RPM (on a box with rpmbuild)
-make rpm
-sudo dnf install -y dist/secretserver-cli-*.noarch.rpm
+# or: make rpm && sudo dnf install -y dist/secretserver-cli-*.noarch.rpm
 ```
 
 ## Credentials
 
-Env vars win over the config file:
+Env vars win over `~/.config/secretserver/config` (mode `0600`):
 
-| Env | Config key | Meaning |
-|-----|------------|---------|
+| Env | Config | Meaning |
+|-----|--------|---------|
 | `SS_URL` | `url` | Base URL, no trailing slash |
-| `SS_TOKEN` | `token` | Project machine token `ss_…` (**write** to edit/delete) |
-| `SS_PROJECT` | `project` | Project UUID |
-| `PID` | — | Legacy alias for `SS_PROJECT` (docs/curl) |
+| `SS_TOKEN` | `token` | `ss_…` machine **or** `pat_…` personal access token |
+| `SS_PROJECT` | `project` | Project UUID (`ss_…`) or UUID/name (`pat_…`) |
+| `PID` | — | Legacy alias for `SS_PROJECT` |
 
-Config path: `~/.config/secretserver/config` (mode `0600`).
+| Token | Auth | Project |
+|-------|------|---------|
+| `ss_…` | Project machine token | **UUID only** |
+| `pat_…` | Personal access token (user RLS) | UUID or unique **name** |
+
+Both use the same endpoints: `/eso/v1/projects/<project>/secrets…`.
 
 ```bash
+# Machine token
 secretserver login --url https://secrets.example.com --token ss_… --project <uuid>
-# alias: secretserver configure …
-# or
-export SS_URL=… SS_TOKEN=… SS_PROJECT=…
+
+# Personal access token (name ok)
+secretserver login --url https://secrets.example.com --token pat_… --project ios-app
 ```
 
 ## Usage
-
-Maps to the machine API:
-
-| Command | HTTP |
-|---------|------|
-| `list` | `GET …/secrets?meta=1` |
-| `get KEY` | `GET …/secrets/{key}` |
-| `edit KEY --value …` | `PUT …/secrets/{key}` (upsert) |
-| `edit KEY --note …` | `PATCH …/secrets/{key}` |
-| `delete KEY` | `DELETE …/secrets/{key}` |
 
 ```bash
 secretserver list
@@ -54,4 +47,5 @@ secretserver get API_KEY
 secretserver edit API_KEY --value 'new' --note 'rotated'
 secretserver edit API_KEY --note 'label only'
 secretserver delete API_KEY
+secretserver projects          # PAT only
 ```

@@ -62,7 +62,7 @@ class TestCLI(unittest.TestCase):
                     "--token",
                     "ss_test",
                     "--project",
-                    "pid-1",
+                    "11111111-1111-1111-1111-111111111111",
                 ]
             )
         text = self.cfg_path.read_text()
@@ -78,7 +78,7 @@ class TestCLI(unittest.TestCase):
             return {"items": [{"key": "K"}]}
 
         with mock.patch.object(ss, "_request", side_effect=capture):
-            ss._save_config("http://h", "ss_t", "p")
+            ss._save_config("http://h", "ss_t", "11111111-1111-1111-1111-111111111111")
             buf = io.StringIO()
             with mock.patch("sys.stdout", buf):
                 ss.main(["list", "-q", "api"])
@@ -94,7 +94,7 @@ class TestCLI(unittest.TestCase):
             return {"ok": True, "key": "K"}
 
         with mock.patch.object(ss, "_request", side_effect=capture):
-            ss._save_config("http://h", "ss_t", "p")
+            ss._save_config("http://h", "ss_t", "11111111-1111-1111-1111-111111111111")
             ss.main(["edit", "K", "--value", "v1"])
             ss.main(["edit", "K", "--note", "n"])
         self.assertEqual(calls[0][0], "PUT")
@@ -131,14 +131,14 @@ class TestCLI(unittest.TestCase):
                     "--token",
                     "ss_t",
                     "--project",
-                    "p1",
+                    "11111111-1111-1111-1111-111111111111",
                 ]
             )
         self.assertIn("ss_t", self.cfg_path.read_text())
 
     def test_delete(self):
         with mock.patch.object(ss, "_request", return_value={"ok": True}) as m:
-            ss._save_config("http://h", "ss_t", "p")
+            ss._save_config("http://h", "ss_t", "11111111-1111-1111-1111-111111111111")
             ss.main(["delete", "db/pass"])
         m.assert_called_once()
         self.assertEqual(m.call_args[0][0], "DELETE")
