@@ -80,9 +80,12 @@ Unset `SS_PROJECT`/`PID` after switch, or env still overrides the config file.
 
 ```bash
 secretserver get secrets
-secretserver get secrets -l api      # filter key/note
+secretserver get secrets -l api      # filter key, note, or custom metadata
 secretserver get secrets -o json
 ```
+
+`-l` / selector is passed as `q=` to the API and matches **key**, **note**, and
+**custom metadata** keys/values (same as the UI search).
 
 Example:
 
@@ -93,32 +96,50 @@ APNS_KEY    plain  Apple push
 SENTRY_DSN  plain  Sentry
 ```
 
-Values are **not** listed (metadata only).
+Values are **not** listed (metadata-only list). Hierarchical keys with `/`
+(e.g. `prod/db/password`) are supported on get/reveal/delete/apply.
 
 ### Get one secret
 
 ```bash
 secretserver get secret API_KEY              # table (default)
 secretserver get secret API_KEY -o value     # scripts — value only
-secretserver get secret API_KEY -o json
+secretserver get secret API_KEY -o json      # full object incl. metadata
 secretserver get secret API_KEY -o name
+secretserver get secret prod/db/password -o value   # hierarchical key
 ```
 
-Example (table):
+Example (`-o json` fields of interest):
 
-```text
-FIELD        VALUE
------------  ------------------------------------
-key          API_KEY
-kind         plain
-note         rotated
-id           a1b2c3d4-…
-value        s3cret…          # truncated in table
+```json
+{
+  "key": "API_KEY",
+  "kind": "plain",
+  "note": "rotated",
+  "value": "s3cret…",
+  "created_at": "2026-01-15T12:00:00+00:00",
+  "updated_at": "2026-03-01T09:30:00+00:00",
+  "last_accessed_at": "2026-08-09T10:00:00+00:00",
+  "last_accessed_by": "alice@example.com",
+  "metadata": {
+    "owner": "platform-team",
+    "env": "prod"
+  }
+}
 ```
 
-If the project (or secret) **requires reveal approval**, PAT `get secret`
-returns HTTP 403 until a project admin approves. Machine tokens (`ss_…`) are
-not gated.
+`metadata` is the map of custom fields from the UI **Metadata** tab (labels
+only — not secret values). Successful PAT get updates last-accessed timestamps.
+
+#### Errors on get (PAT)
+
+| Server `error` | Meaning | What to do |
+|----------------|---------|------------|
+| `approval_required` | Reveal needs admin approval | `secretserver reveal secret NAME --reason "…"` then wait for approve |
+| `forbidden` | Per-secret ACL denies reveal | Ask a project admin to grant reveal/write or change ACL mode |
+| other 403 | Token/project rights | Check token, project, team membership |
+
+Machine tokens (`ss_…`) are **not** gated by human ACL or reveal-approval.
 
 ```bash
 # Request access (PAT)
@@ -126,7 +147,7 @@ secretserver reveal secret API_KEY --reason "debugging prod auth #1234"
 
 # Approver (project admin / team owner, PAT)
 secretserver get requests
-secretserver approve <request-id> --minutes 15
+secretserver approve <request-id> --minutes 15   # 15, 60, 240, or 1440 only
 # secretserver deny <request-id>
 
 # Then fetch value
@@ -141,7 +162,7 @@ printf '%s' "$NEW" | secretserver apply secret API_KEY --from-file=-
 secretserver apply secret API_KEY --from-env=NEW_API_KEY
 secretserver apply secret API_KEY --from-file=./api.key
 
-# Metadata only
+# Note / kind / expiry (not custom metadata map)
 secretserver apply secret API_KEY --note 'rotated in CI'
 secretserver apply secret API_KEY --kind plain --expires-days 90 --from-env=V
 
@@ -150,6 +171,10 @@ secretserver apply secret API_KEY --kind plain --expires-days 90 --from-env=V
 ```
 
 Aliases: `create`, `set` → `apply`. Success table **omits** the secret value.
+
+Custom metadata fields (`owner=platform-team`, etc.) are set in the **app UI →
+secret → Metadata** tab. The CLI can **search** and **read** them via
+`get secrets -l` / `get secret -o json`.
 
 ### Delete
 
@@ -187,6 +212,21 @@ android-app  Mobile    c29f6ab5-…
 
 ---
 
+## Org access model (app + CLI)
+
+Secrets inherit **team / project** membership. Optional **per-secret ACL**
+(Permissions tab) and **reveal approval** apply to PAT/browser users.
+**Groups** (Team → Groups) can hold team roles, project roles, and secret ACL
+grants. Full guide: app repo `docs/rbac.md`.
+
+| Who | Plaintext get | Bulk list values |
+|-----|---------------|------------------|
+| Machine `ss_…` | Project token scope | All live keys in project |
+| PAT with write/reveal | Subject to ACL + approval | Only secrets caller may reveal |
+| PAT meta list (`get secrets`) | No values | Keys + note + metadata fields |
+
+---
+
 ## Shell scripts (keep secrets out of history)
 
 1. Store `SS_TOKEN` in env/CI secrets or `0600` config — never in git.
@@ -203,6 +243,18 @@ set -euo pipefail
 export DATABASE_URL
 DATABASE_URL="$(secretserver get secret DATABASE_URL -o value)"
 psql "$DATABASE_URL" -c 'SELECT 1'
+```
+
+### Find secrets by custom metadata then load one
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Lists keys whose key/note/metadata match "platform-team"
+secretserver get secrets -l platform-team
+export API_KEY
+API_KEY="$(secretserver get secret API_KEY -o value)"
 ```
 
 ### Read several secrets
