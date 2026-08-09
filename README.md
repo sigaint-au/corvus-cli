@@ -116,6 +116,23 @@ id           a1b2c3d4-…
 value        s3cret…          # truncated in table
 ```
 
+If the project (or secret) **requires reveal approval**, PAT `get secret`
+returns HTTP 403 until a project admin approves. Machine tokens (`ss_…`) are
+not gated.
+
+```bash
+# Request access (PAT)
+secretserver reveal secret API_KEY --reason "debugging prod auth #1234"
+
+# Approver (project admin / team owner, PAT)
+secretserver get requests
+secretserver approve <request-id> --minutes 15
+# secretserver deny <request-id>
+
+# Then fetch value
+secretserver get secret API_KEY -o value
+```
+
 ### Create / update
 
 ```bash
