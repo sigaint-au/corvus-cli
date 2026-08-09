@@ -217,7 +217,7 @@ android-app  Mobile    c29f6ab5-…
 Secrets inherit **team / project** membership. Optional **per-secret ACL**
 (Permissions tab) and **reveal approval** apply to PAT/browser users.
 **Groups** (Team → Groups) can hold team roles, project roles, and secret ACL
-grants. Full guide: app repo `docs/rbac.md`.
+grants. Full guide: app repo `docs/admin/rbac.md`.
 
 | Who | Plaintext get | Bulk list values |
 |-----|---------------|------------------|
@@ -417,4 +417,4 @@ Server settings (SMTP, LDAP, OIDC, banners, etc.) are **not** exposed in the CLI
 | Trash | `get trash` / `restore trash ID` |
 | Admin users / audit | `get users` / `get audit --source access` |
 
-Server API: `secretserver` repo → `docs/api.md` + `/eso/v1` management routes.
+Server API: `secretserver` repo → `docs/dev/api.md` + `/eso/v1` management routes.
