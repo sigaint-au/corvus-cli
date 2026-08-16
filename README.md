@@ -1,6 +1,6 @@
 # secretserver-cli
 
-kubectl-style CLI for [Sigaint Secret Server](https://git.sigaint.au/Sigaint/secretserver) (`/eso/v1`).
+CLI for [Sigaint Secret Server](https://git.sigaint.au/Sigaint/secretserver) (`/eso/v1`).
 
 Python 3 stdlib only · RHEL 9+
 
@@ -8,11 +8,9 @@ Python 3 stdlib only · RHEL 9+
 sudo install -m 0755 secretserver /usr/bin/secretserver
 sudo install -m 0644 secretserver.1 /usr/share/man/man1/secretserver.1
 # or: make rpm && sudo dnf install -y dist/secretserver-cli-*.noarch.rpm
-#     (installs the binary and the man page together)
 ```
 
-`--help` / no-args prints a friendly usage summary; `man secretserver` gives the
-full reference.
+No args / `--help` → usage. `man secretserver` → full reference.
 
 ---
 
@@ -95,7 +93,7 @@ secretserver get secrets -o json
 ```
 
 `-l` / selector is passed as `q=` to the API and matches **key**, **note**, and
-**custom metadata** keys/values (same as the UI search).
+**custom metadata** keys/values.
 
 Example:
 
@@ -182,9 +180,8 @@ secretserver apply secret API_KEY --kind plain --expires-days 90 --from-env=V
 
 Aliases: `create`, `set` → `apply`. Success table **omits** the secret value.
 
-Custom metadata fields (`owner=platform-team`, etc.) are set with `apply
---meta`/`--delete-meta` (PAT only) and searched/read via `get secrets -l` /
-`get secret -o json`.
+Custom metadata (`owner=platform-team`, …): set with `--meta`/`--delete-meta`
+(PAT only); search/read via `get secrets -l` / `get secret -o json`.
 
 ```bash
 secretserver apply secret API_KEY --meta owner=platform-team --meta env=prod --note 'metadata set from CLI'
@@ -227,12 +224,12 @@ android-app  Mobile    c29f6ab5-…
 
 ---
 
-## Org access model (app + CLI)
+## Org access model
 
-Secrets inherit **team / project** membership. Optional **per-secret ACL**
-(Permissions tab) and **reveal approval** apply to PAT/browser users.
-**Groups** (Team → Groups) can hold team roles, project roles, and secret ACL
-grants. Full guide: app repo `docs/admin/rbac.md`.
+Secrets inherit **team / project** membership. Optional **per-secret ACL** and
+**reveal approval** apply to PAT/browser users. ACL & approval do **not** gate
+machine tokens (`ss_…`). **Groups** can hold team roles, project roles, and
+secret ACL grants.
 
 | Who | Plaintext get | Bulk list values |
 |-----|---------------|------------------|
