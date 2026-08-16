@@ -6,8 +6,13 @@ Python 3 stdlib only · RHEL 9+
 
 ```bash
 sudo install -m 0755 secretserver /usr/bin/secretserver
+sudo install -m 0644 secretserver.1 /usr/share/man/man1/secretserver.1
 # or: make rpm && sudo dnf install -y dist/secretserver-cli-*.noarch.rpm
+#     (installs the binary and the man page together)
 ```
+
+`--help` / no-args prints a friendly usage summary; `man secretserver` gives the
+full reference.
 
 ---
 
@@ -459,3 +464,19 @@ roles: `project-read`, `project-write`, `project-admin`. Machine roles:
 
 Server API: `secretserver` repo → `docs/dev/api.md` (secret CRUD uses `/eso/v1`,
 org/admin uses `/api/v1/manage`, PAT only).
+
+---
+
+## Development
+
+`pyproject.toml` configures **pytest** and **ruff** (mirroring the `secretserver`
+server). Tests live in `tests/` and need no network or server.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -U pip
+.venv/bin/pip install "pytest==9.1.1" "pytest-cov==7.1.0" "ruff==0.16.3"
+.venv/bin/python -m pytest          # run the suite (43 tests)
+.venv/bin/python -m ruff check secretserver tests/   # lint
+# or: make check                    # compile + help + pytest + ruff
+```

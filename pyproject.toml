@@ -1,0 +1,42 @@
+[project]
+name = "secretserver-cli"
+version = "1.0.0"
+description = "Command-line client for Sigaint Secret Server"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.3",
+]
+
+[project.urls]
+Source = "https://github.com/mhahl/secretserver-cli"
+
+# ── Ruff ────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # line length handled by the formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["secretserver"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ── Pytest ──────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-q --strict-markers --tb=short"

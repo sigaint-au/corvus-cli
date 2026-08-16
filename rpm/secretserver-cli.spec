@@ -22,11 +22,13 @@ Credentials from ~/.config/secretserver/config or SS_URL / SS_TOKEN / SS_PROJECT
 
 %install
 install -D -m 0755 secretserver %{buildroot}%{_bindir}/secretserver
+install -D -m 0644 secretserver.1 %{buildroot}%{_mandir}/man1/secretserver.1
 
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/secretserver
+%{_mandir}/man1/secretserver.1*
 
 %changelog
 * Sat Aug 08 2026 Secretserver CLI <cli@local> - 1.0.0-1
