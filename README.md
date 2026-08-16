@@ -172,9 +172,14 @@ secretserver apply secret API_KEY --kind plain --expires-days 90 --from-env=V
 
 Aliases: `create`, `set` → `apply`. Success table **omits** the secret value.
 
-Custom metadata fields (`owner=platform-team`, etc.) are set in the **app UI →
-secret → Metadata** tab. The CLI can **search** and **read** them via
-`get secrets -l` / `get secret -o json`.
+Custom metadata fields (`owner=platform-team`, etc.) are set with `apply
+--meta`/`--delete-meta` (PAT only) and searched/read via `get secrets -l` /
+`get secret -o json`.
+
+```bash
+secretserver apply secret API_KEY --meta owner=platform-team --meta env=prod --note 'metadata set from CLI'
+secretserver apply secret API_KEY --delete-meta env
+```
 
 ### Delete
 
@@ -365,7 +370,7 @@ secretserver get team Platform
 secretserver create team NewTeam
 secretserver delete team NewTeam
 secretserver get members --team Platform
-secretserver create member bob@example.com --team Platform --role member
+secretserver create member bob@example.com --team Platform --role team-member
 secretserver delete member bob@example.com --team Platform
 secretserver transfer team Platform --email alice@example.com
 
@@ -375,12 +380,34 @@ secretserver get project ios-app
 secretserver create project my-app --team Platform
 secretserver delete project my-app
 secretserver get members              # current project
-secretserver create member dave@example.com --role write
+secretserver create member dave@example.com --role project-write
 
 # Machine tokens (current project)
-secretserver get tokens
-secretserver create token ci --role write          # prints ss_… once on stderr
+secretserver get tokens                         # shows key allow-list scope
+secretserver create token ci --role service-write               # prints ss_… once
+secretserver create token ci --role service-reveal --scope 'API_KEY,prod/*'
 secretserver delete token <token-uuid>
+
+# Secret access & metadata (PAT, project admin for access settings)
+secretserver apply secret API_KEY --access-mode restricted --requires-approval on
+secretserver grant secret API_KEY --to bob@example.com --role secret-reveal
+secretserver unbind secret API_KEY <binding-id>
+secretserver apply secret API_KEY --meta owner=platform-team --delete-meta env
+
+# Project settings (PAT, project admin)
+secretserver settings --require-reveal-approval on --default-access-mode restricted
+
+# Export / bulk trash (PAT)
+secretserver export -o env          # secrets as KEY=VALUE (json|csv|table|value)
+secretserver restore trash --all    # bulk restore
+secretserver delete trash --all     # bulk purge
+
+# Groups (PAT)
+secretserver get groups --team Platform
+secretserver create group admins --team Platform
+secretserver create group-member bob@example.com --team Platform --group admins
+secretserver delete group-member bob@example.com --team Platform --group admins
+secretserver delete group admins --team Platform
 
 # Trash
 secretserver get trash
@@ -412,9 +439,18 @@ Server settings (SMTP, LDAP, OIDC, banners, etc.) are **not** exposed in the CLI
 | Script value | `get secret KEY -o value` |
 | Apply secret | `apply secret KEY --from-env=V` |
 | Teams / projects | `get teams` / `create project N --team T` |
-| Members | `create member email --team T --role member` |
-| Tokens | `create token NAME --role write` |
+| Members | `create member email --team T --role team-member` |
+| Tokens | `create token NAME --role service-write [--scope 'K1,prod/*']` |
+| Secret access / bindings | `apply secret K --access-mode …` / `grant secret K --to EMAIL` |
+| Project settings | `settings --require-reveal-approval on` |
+| Export | `export -o env\|json\|csv` |
+| Groups | `get groups --team T` / `create group NAME --team T` |
 | Trash | `get trash` / `restore trash ID` |
 | Admin users / audit | `get users` / `get audit --source access` |
 
-Server API: `secretserver` repo → `docs/dev/api.md` + `/eso/v1` management routes.
+Team roles: `team-viewer`, `team-member`, `team-admin`, `team-owner`. Project
+roles: `project-read`, `project-write`, `project-admin`. Machine roles:
+`service-read`, `service-reveal`, `service-write`.
+
+Server API: `secretserver` repo → `docs/dev/api.md` (secret CRUD uses `/eso/v1`,
+org/admin uses `/api/v1/manage`, PAT only).
