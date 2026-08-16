@@ -46,7 +46,7 @@ class TestCLI(unittest.TestCase):
         self.assertIn("get secrets", buf.getvalue())
 
     def test_login_writes_config(self):
-        with mock.patch.object(ss, "_proj_api", return_value={"items": []}):
+        with mock.patch.object(ss, "_http", return_value={"items": []}):
             ss.main(
                 [
                     "login",

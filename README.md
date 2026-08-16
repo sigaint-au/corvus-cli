@@ -21,6 +21,7 @@ Env **or** `~/.config/secretserver/config` (`0600`). **Env wins.**
 | `SS_TOKEN` | `ss_…` machine token **or** `pat_…` PAT |
 | `SS_PROJECT` | Project UUID (`ss_…`) or UUID/name (`pat_…`) |
 | `PID` | Alias for `SS_PROJECT` |
+| `SS_TIMEOUT` | HTTP timeout in seconds (default 60, min 5) |
 
 | Token | Project |
 |-------|---------|
@@ -47,6 +48,10 @@ export SS_PROJECT=<uuid>
 ```
 
 `configure` = `login`.
+
+> **Security:** `--token` and `--value` are visible in process listings (`ps aux`).
+> Prefer `SS_TOKEN` env var and `--from-file` / `--from-env` for secret values.
+> The CLI prints a warning when `--token` or `--value` is used.
 
 ---
 
