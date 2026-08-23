@@ -22,8 +22,8 @@ jobs:
       - name: Install dev dependencies
         run: pip install "pytest==9.1.1" "ruff==0.16.3"
       - name: Compile check
-        run: python3 -m py_compile secretserver
+        run: python3 -m py_compile corvus
       - name: Run tests (pytest)
         run: python3 -m pytest
       - name: Lint (ruff)
-        run: python3 -m ruff check secretserver tests/
+        run: python3 -m ruff check corvus tests/

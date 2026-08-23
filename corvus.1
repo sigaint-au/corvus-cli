@@ -1,18 +1,18 @@
-.TH SECRETSERVER 1 "2026-08-16" "secretserver-cli 1.0.0" "User Commands"
+.TH CORVUS 1 "2026-08-16" "corvus-cli 1.0.0" "User Commands"
 .SH NAME
-secretserver \- command-line client for Sigaint Secret Server
+corvus \- command-line client for Corvus
 .SH SYNOPSIS
-.B secretserver
+.B corvus
 .I <command>
 .RI [ resource ]
 .RI [ name ]
 .I [flags]
 .br
-.B secretserver
+.B corvus
 .B help
 .SH DESCRIPTION
-.B secretserver
-is a command-line client for Sigaint Secret Server. It uses
+.B corvus
+is a command-line client for Corvus. It uses
 the machine-facing
 .BR /eso/v1
 API for secret CRUD and the
@@ -34,10 +34,10 @@ team or project the user is a member of (by UUID or unique name) and can run
 org and admin commands.
 .PP
 With no arguments,
-.B secretserver
+.B corvus
 prints a usage summary and exits with status 0. The same summary is
 available via
-.BR "secretserver\ help".
+.BR "corvus\ help".
 .SH COMMANDS
 .TP
 .B login, configure
@@ -219,40 +219,40 @@ Default project (UUID, or name with a PAT). Alias:
 Environment variables take precedence over the config file.
 .SH FILES
 .TP
-.B ~/.config/secretserver/config
+.B ~/.config/corvus/config
 Configuration file, mode 0600, written by
-.BR "secretserver login".
+.BR "corvus login".
 .SH EXAMPLES
 .TP
 List secrets:
-.B secretserver get secrets
+.B corvus get secrets
 .TP
 Get one secret as a raw value:
-.B secretserver get secret API_KEY \-o value
+.B corvus get secret API_KEY \-o value
 .TP
 History-safe write from stdin:
-.B printf '%s' "$NEW" | secretserver apply secret API_KEY --from-file=-
+.B printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
 .TP
 Create a team and project:
-.B secretserver create team Platform
+.B corvus create team Platform
 .br
-.B secretserver create project demo --team Platform
+.B corvus create project demo --team Platform
 .TP
 Create a write token scoped to two keys:
-.B secretserver create token ci --role service-write --scope 'API_KEY,prod/*'
+.B corvus create token ci --role service-write --scope 'API_KEY,prod/*'
 .TP
 Restrict a secret and grant a user:
-.B secretserver apply secret API_KEY --access-mode restricted
+.B corvus apply secret API_KEY --access-mode restricted
 .br
-.B secretserver grant secret API_KEY --to alice@example.com --role secret-reveal
+.B corvus grant secret API_KEY --to alice@example.com --role secret-reveal
 .TP
 Export secrets:
-.B secretserver export --output env
+.B corvus export --output env
 .SH EXIT STATUS
 0 on success, 1 on failure (missing credentials, HTTP error, invalid input).
 .SH SEE ALSO
 Full documentation is in the project's README, and the API reference in the
 server repository at
-.BR secretserver/docs/dev/api.md .
+.BR corvus/docs/dev/api.md .
 .SH BUGS
 Report issues to the project repository.

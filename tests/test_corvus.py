@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Pytest suite for the secretserver CLI (no network)."""
+"""Pytest suite for the corvus CLI (no network)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ PID = "11111111-1111-1111-1111-111111111111"
 
 
 def _load_script() -> object:
-    loader = importlib.machinery.SourceFileLoader("secretserver", str(ROOT / "secretserver"))
+    loader = importlib.machinery.SourceFileLoader("corvus", str(ROOT / "corvus"))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
@@ -24,14 +24,14 @@ def _load_script() -> object:
 
 @pytest.fixture(scope="module")
 def ss():
-    """The secretserver CLI loaded as a module."""
+    """The corvus CLI loaded as a module."""
     return _load_script()
 
 
 @pytest.fixture(autouse=True)
 def cli_env(ss, tmp_path, monkeypatch):
     """Point the CLI at a throwaway config dir and clear env credentials."""
-    cfg_dir = tmp_path / ".config" / "secretserver"
+    cfg_dir = tmp_path / ".config" / "corvus"
     monkeypatch.setattr(ss, "CONFIG_DIR", cfg_dir)
     monkeypatch.setattr(ss, "CONFIG_PATH", cfg_dir / "config")
     for env in (ss.ENV_URL, ss.ENV_TOKEN, ss.ENV_PROJECT):

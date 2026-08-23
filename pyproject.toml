@@ -1,7 +1,7 @@
 [project]
-name = "secretserver-cli"
+name = "corvus-cli"
 version = "1.0.0"
-description = "Command-line client for Sigaint Secret Server"
+description = "Command-line client for Corvus"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.9"
@@ -14,7 +14,7 @@ dev = [
 ]
 
 [project.urls]
-Source = "https://github.com/mhahl/secretserver-cli"
+Source = "https://github.com/mhahl/corvus-cli"
 
 # ── Ruff ────────────────────────────────────────────────────────────
 [tool.ruff]
@@ -28,7 +28,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["secretserver"]
+known-first-party = ["corvus"]
 
 [tool.ruff.format]
 quote-style = "double"

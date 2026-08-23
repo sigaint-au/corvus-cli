@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Command-line client for Sigaint Secret Server (/eso/v1).
+"""Command-line client for Corvus (/eso/v1).
 
 Secrets work with ss_… or pat_…. Teams/projects/admin require pat_….
 """
@@ -16,7 +16,7 @@ import urllib.request
 from configparser import ConfigParser
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "secretserver"
+CONFIG_DIR = Path.home() / ".config" / "corvus"
 CONFIG_PATH = CONFIG_DIR / "config"
 ENV_URL, ENV_TOKEN, ENV_PROJECT = "SS_URL", "SS_TOKEN", "SS_PROJECT"
 ENV_PROJECT_ALIASES = (ENV_PROJECT, "PID")
@@ -25,21 +25,21 @@ _UUID_RE = re.compile(
 )
 
 USAGE = """\
-secretserver — command-line client for Sigaint Secret Server
+corvus - command-line client for Corvus
 
-Using secrets is as easy as:
+Quick start:
 
-    secretserver login --url https://secrets.example --token ss_… --project <uuid>
-    secretserver get secrets
-    secretserver get secret API_KEY -o value
-    printf '%s' "$NEW" | secretserver apply secret API_KEY --from-file=-
+    corvus login --url https://secrets.example --token ss_… --project <uuid>
+    corvus get secrets
+    corvus get secret API_KEY -o value
+    printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
 
 Usage:
-    secretserver <command> [resource] [name] [flags]
+    corvus <command> [resource] [name] [flags]
 
 Tokens:
-    ss_…   machine token — one project, secrets only (UUID)
-    pat_…   personal access token — secrets + teams/projects/admin (name or UUID)
+    ss_…   machine token: one project, secrets only (UUID)
+    pat_…  personal access token: secrets + teams/projects/admin (name or UUID)
 
 Commands
   Secrets
@@ -86,7 +86,7 @@ Options
     -l, --selector QUERY  filter secrets (key/note/metadata), members, or users
 
 Credentials:  use env SS_URL / SS_TOKEN / SS_PROJECT, or run
-    secretserver login --url … --token … --project …
+    corvus login --url … --token … --project …
 """
 
 
@@ -144,7 +144,7 @@ def _require_creds() -> tuple[str, str, str, str]:
     missing = [k for k in ("url", "token") if not c.get(k)]
     if missing:
         sys.exit(
-            f"missing {', '.join(missing)}; set env or run: secretserver login"
+            f"missing {', '.join(missing)}; set env or run: corvus login"
         )
     kind = _token_kind(c["token"])
     if kind == "unknown":
@@ -155,7 +155,7 @@ def _require_creds() -> tuple[str, str, str, str]:
 def _require_project() -> str:
     _, _, project, kind = _require_creds()
     if not project:
-        sys.exit("no project set; run: secretserver project <name> or login --project …")
+        sys.exit("no project set; run: corvus project <name> or login --project …")
     if kind == "machine" and not _UUID_RE.match(project):
         sys.exit("machine tokens require project UUID")
     return project
@@ -243,7 +243,7 @@ def _proj_api(
     base, token, conf_proj, kind = _require_creds()
     project = project or conf_proj
     if not project:
-        sys.exit("no project set; secretserver project <name>")
+        sys.exit("no project set; corvus project <name>")
     if kind == "machine" and not _UUID_RE.match(project):
         sys.exit("machine tokens require project UUID")
     proj = urllib.parse.quote(project, safe="")
@@ -282,7 +282,7 @@ def _mgmt_proj_api(
     base, token, conf_proj, kind = _require_creds()
     project = project or conf_proj
     if not project:
-        sys.exit("no project set; secretserver project <name>")
+        sys.exit("no project set; corvus project <name>")
     proj = urllib.parse.quote(project, safe="")
     return _http(
         method,
@@ -639,7 +639,7 @@ def cmd_get(args: argparse.Namespace) -> None:
                 sys.exit(
                     f"{msg}\n"
                     f"hint: request approval with:\n"
-                    f'  secretserver reveal secret {name} --reason "..."'
+                    f'  corvus reveal secret {name} --reason "..."'
                 )
             if "forbidden" in low or "403" in msg:
                 sys.exit(
@@ -1162,7 +1162,7 @@ def cmd_export(args: argparse.Namespace) -> None:
 
 def cmd_settings(args: argparse.Namespace) -> None:
     """settings [--require-reveal-approval on|off] [--default-access-mode M]
-    [--description TEXT]  — project settings (PAT)."""
+    [--description TEXT]  project settings (PAT)."""
     _require_pat()
     body: dict = {}
     if getattr(args, "require_reveal_approval", None) is not None:
@@ -1250,8 +1250,8 @@ def _add_value_flags(p):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="secretserver",
-        description="Command-line client for Sigaint Secret Server",
+        prog="corvus",
+        description="Command-line client for Corvus",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="cmd")
