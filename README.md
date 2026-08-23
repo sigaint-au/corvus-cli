@@ -477,3 +477,7 @@ python3 -m venv .venv
 .venv/bin/python -m ruff check corvus tests/   # lint
 # or: make check                    # compile + help + pytest + ruff
 ```
+
+## License
+
+AGPL-3.0-or-later. See `LICENSE`.

@@ -13,3 +13,4 @@ build/rpm/RPMS/
 build/rpm/SOURCES/
 build/rpm/SRPMS/
 dist/
+build/

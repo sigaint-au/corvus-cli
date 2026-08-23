@@ -14,7 +14,7 @@ dev = [
 ]
 
 [project.urls]
-Source = "https://github.com/mhahl/corvus-cli"
+Source = "https://git.sigaint.au/Sigaint/corvus-cli"
 
 # ── Ruff ────────────────────────────────────────────────────────────
 [tool.ruff]

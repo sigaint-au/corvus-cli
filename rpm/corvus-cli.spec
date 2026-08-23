@@ -2,8 +2,8 @@ Name:           corvus-cli
 Version:        1.0.0
 Release:        1%{?dist}
 Summary:        CLI for Corvus machine API
-License:        MIT
-URL:            https://github.com/example/corvus-cli
+License:        AGPL-3.0-or-later
+URL:            https://git.sigaint.au/Sigaint/corvus-cli
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 # RHEL 9+ / compatible
