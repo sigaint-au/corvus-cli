@@ -19,7 +19,7 @@ Source = "https://git.sigaint.au/Sigaint/corvus-cli"
 # ── Ruff ────────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

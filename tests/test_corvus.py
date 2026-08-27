@@ -52,7 +52,7 @@ def capture(calls, value=None):
     value = {"ok": True} if value is None else value
 
     def wrapped(method, path, *, body=None, query=None, project=None):
-        calls.append((method, path, body, query))
+        calls.append((method, path, body, query, project))
         return value
 
     return wrapped
@@ -318,9 +318,16 @@ def test_delete_team_hits_manage(ss):
     calls = []
     write_config(ss, token="pat_test")
     with mock.patch.object(ss, "_mgmt_api", side_effect=capture(calls)):
-        ss.main(["delete", "team", "MyTeam"])
+        ss.main(["delete", "team", "MyTeam", "--yes"])
     assert calls[0][0] == "DELETE"
     assert calls[0][1] == "/teams/MyTeam"
+
+
+def test_delete_team_requires_yes(ss):
+    write_config(ss, token="pat_test")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["delete", "team", "MyTeam"])
+    assert "--yes" in str(e.value)
 
 
 def test_restore_trash_hits_manage_project(ss):
@@ -509,5 +516,179 @@ def test_delete_trash_all_purges(ss):
     calls = []
     write_config(ss, token="pat_test")
     with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
-        ss.main(["delete", "trash", "--all"])
+        ss.main(["delete", "trash", "--all", "--yes"])
     assert calls[0][2]["action"] == "purge"
+
+
+def test_delete_trash_all_requires_yes(ss):
+    write_config(ss, token="pat_test")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["delete", "trash", "--all"])
+    assert "--yes" in str(e.value)
+
+
+# ── release-readiness fixes ─────────────────────────────────────────
+
+
+def test_version_flag(ss, capsys):
+    with pytest.raises(SystemExit) as e:
+        ss.main(["--version"])
+    assert e.value.code == 0
+    assert ss.VERSION in capsys.readouterr().out
+
+
+def test_project_reveal_role_accepted(ss):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(
+            ["create", "member", "dave@x.com", "--role", "project-reveal"]
+        )
+    assert calls[0][2]["role"] == "project-reveal"
+
+
+def test_get_project_detail_renders_table(ss, capsys):
+    payload = {
+        "project": {"id": "p1", "name": "ios-app", "team_name": "Mobile"},
+        "members": [{"user_id": "u1", "email": "a@x", "role": "project-admin"}],
+        "tokens": [
+            {
+                "id": "tok1",
+                "name": "ci",
+                "token_prefix": "ss_ab",
+                "role": "service-write",
+                "expires_at": None,
+            }
+        ],
+    }
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_api", return_value=payload):
+        ss.main(["get", "project", "ios-app"])
+    out = capsys.readouterr().out
+    assert "ios-app" in out
+    assert "Members:" in out
+    assert "a@x" in out
+    assert "Tokens:" in out
+    assert "ss_ab" in out
+    assert "{" not in out
+
+
+def test_get_team_detail_renders_table(ss, capsys):
+    payload = {
+        "team": {"id": "t1", "name": "Platform"},
+        "members": [{"user_id": "u1", "email": "b@x", "role": "team-admin"}],
+        "projects": [{"id": "p1", "name": "ios-app"}],
+    }
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_api", return_value=payload):
+        ss.main(["get", "team", "Platform"])
+    out = capsys.readouterr().out
+    assert "Platform" in out
+    assert "Members:" in out
+    assert "b@x" in out
+    assert "Projects:" in out
+    assert "ios-app" in out
+    assert "{" not in out
+
+
+def test_from_file_missing_clean_error(ss):
+    write_config(ss, token="pat_test")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["apply", "secret", "K", "--from-file", "/nonexistent/path"])
+    assert "cannot read" in str(e.value)
+
+
+def test_config_roundtrip_preserves_percent(ss, cfg_path):
+    ss._save_config("https://h/%20path", "pat_%xx", PID)
+    c = ss._load_config()
+    assert c["url"] == "https://h/%20path"
+    assert c["token"] == "pat_%xx"
+
+
+def test_machine_read_token_hint(ss):
+    def boom(method, path, *, body=None, query=None, project=None):
+        raise SystemExit('HTTP 403: {"error":"token does not have reveal access"}')
+
+    write_config(ss, token="ss_read")
+    with mock.patch.object(ss, "_proj_api", side_effect=boom):
+        with pytest.raises(SystemExit) as e:
+            ss.main(["get", "secret", "K"])
+    assert "service-read" in str(e.value)
+
+
+def test_approve_requires_pat(ss):
+    write_config(ss, token="ss_read")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["approve", "req-id"])
+    assert "pat_" in str(e.value)
+
+
+def test_deny_requires_pat(ss):
+    write_config(ss, token="ss_read")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["deny", "req-id"])
+    assert "pat_" in str(e.value)
+
+
+def test_get_requests_requires_pat(ss):
+    write_config(ss, token="ss_read")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["get", "requests"])
+    assert "pat_" in str(e.value)
+
+
+# ── admin usability fixes ───────────────────────────────────────────
+
+
+def test_get_members_project_override(ss):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["get", "members", "--project", "other-app"])
+    assert calls[0][1] == "/members"
+    assert calls[0][4] == "other-app"
+
+
+def test_grant_rejects_invalid_role(ss):
+    write_config(ss, token="pat_admin")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["grant", "secret", "K", "--to", "a@x", "--role", "super-admin"])
+    assert "secret-read" in str(e.value)
+
+
+def test_grant_defaults_to_secret_reveal(ss):
+    calls = []
+    write_config(ss, token="pat_admin")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["grant", "secret", "K", "--to", "a@x"])
+    assert calls[0][2]["role"] == "secret-reveal"
+
+
+def test_audit_project_warns_on_since(ss, capsys):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["get", "audit", "--since", "2026-01-01"])
+    err = capsys.readouterr().err
+    assert "ignored" in err
+    assert "since" not in calls[0][3]
+
+
+def test_get_users_admin_hint(ss):
+    def boom(method, path, *, body=None, query=None):
+        raise SystemExit('HTTP 403: {"error":"forbidden"}')
+
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_api", side_effect=boom):
+        with pytest.raises(SystemExit) as e:
+            ss.main(["get", "users"])
+    assert "global admin" in str(e.value)
+
+
+def test_create_token_default_name_echo(ss, capsys):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["create", "token"])
+    assert calls[0][2]["name"] == "cli"
+    assert "default token name" in capsys.readouterr().err

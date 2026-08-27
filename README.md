@@ -10,7 +10,7 @@ sudo install -m 0644 corvus.1 /usr/share/man/man1/corvus.1
 # or: make rpm && sudo dnf install -y dist/corvus-cli-*.noarch.rpm
 ```
 
-No args / `--help` → usage. `man corvus` → full reference.
+No args / `--help` → usage. `--version` → version. `man corvus` → full reference.
 
 ---
 
@@ -370,12 +370,23 @@ export REQUIRED_KEY="$val"
 Teams, projects, members, tokens, trash, users, and audit need a **`pat_…`** token.
 Machine tokens (`ss_…`) only manage secrets in one project.
 
+Most project-scoped commands act on the current project. Add `--project NAME|UUID`
+to target another project without switching (PAT resolves names):
+
+```bash
+corvus get members --project other-app
+corvus get tokens --project other-app
+corvus create token ci --project other-app --role service-write
+```
+
+Destructive deletes (team, project, trash purge) need `--yes`:
+
 ```bash
 # Teams
 corvus get teams
 corvus get team Platform
 corvus create team NewTeam
-corvus delete team NewTeam
+corvus delete team NewTeam --yes
 corvus get members --team Platform
 corvus create member bob@example.com --team Platform --role team-member
 corvus delete member bob@example.com --team Platform
@@ -385,7 +396,7 @@ corvus transfer team Platform --email alice@example.com
 corvus get projects
 corvus get project ios-app
 corvus create project my-app --team Platform
-corvus delete project my-app
+corvus delete project my-app --yes
 corvus get members              # current project
 corvus create member dave@example.com --role project-write
 
@@ -407,7 +418,7 @@ corvus settings --require-reveal-approval on --default-access-mode restricted
 # Export / bulk trash (PAT)
 corvus export -o env          # secrets as KEY=VALUE (json|csv|table|value)
 corvus restore trash --all    # bulk restore
-corvus delete trash --all     # bulk purge
+corvus delete trash --all --yes     # bulk purge
 
 # Groups (PAT)
 corvus get groups --team Platform
@@ -419,7 +430,7 @@ corvus delete group admins --team Platform
 # Trash
 corvus get trash
 corvus restore trash <secret-uuid>
-corvus delete trash <secret-uuid>            # permanent purge
+corvus delete trash <secret-uuid> --yes    # permanent purge
 
 # Audit / users (global admin PAT)
 corvus get users
@@ -456,7 +467,7 @@ Server settings (SMTP, LDAP, OIDC, banners, etc.) are **not** exposed in the CLI
 | Admin users / audit | `get users` / `get audit --source access` |
 
 Team roles: `team-viewer`, `team-member`, `team-admin`, `team-owner`. Project
-roles: `project-read`, `project-write`, `project-admin`. Machine roles:
+roles: `project-read`, `project-write`, `project-reveal`, `project-admin`. Machine roles:
 `service-read`, `service-reveal`, `service-write`.
 
 Server API: `corvus` repo → `docs/dev/api.md` (secret CRUD uses `/eso/v1`,
@@ -473,7 +484,7 @@ server). Tests live in `tests/` and need no network or server.
 python3 -m venv .venv
 .venv/bin/pip install -U pip
 .venv/bin/pip install "pytest==9.1.1" "pytest-cov==7.1.0" "ruff==0.16.3"
-.venv/bin/python -m pytest          # run the suite (43 tests)
+.venv/bin/python -m pytest          # run the suite
 .venv/bin/python -m ruff check corvus tests/   # lint
 # or: make check                    # compile + help + pytest + ruff
 ```

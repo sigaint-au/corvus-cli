@@ -61,7 +61,9 @@ Create a team, project, member, group, group-member, token, or secret.
 .TP
 .BI "delete " RESOURCE
 .RI NAME " [flags]"
-Delete a resource.
+Delete a resource. Deleting a team, project, or trashed secret (purge)
+requires
+.BR \-\-yes .
 .TP
 .BI "reveal " "secret NAME [--reason TEXT]"
 Request reveal approval (or print the value with
@@ -204,6 +206,13 @@ Set a secret's access mode: inherit or restricted (project admin).
 .TP
 .BI \-\-requires\-approval on|off|inherit
 Override reveal approval for a secret (project admin).
+.TP
+.BI \-\-project PROJECT
+Target a project by UUID or unique name (PAT) without switching the default.
+.TP
+.BR \-\-yes
+Confirm a destructive delete (team, project, or trash purge). Without it the
+command refuses and exits.
 .SH ENVIRONMENT
 .TP
 .B SS_URL
