@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Command-line client for Corvus (/eso/v1).
 
-Secrets work with ss_… or pat_…. Teams/projects/admin require pat_….
+Secrets work with ss_…, pat_…, or sso_…. Teams/projects/admin require pat_… (or sso_…).
 """
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ Usage:
 Tokens:
     ss_…   machine token: one project, secrets only (UUID)
     pat_…  personal access token: secrets + teams/projects/admin (name or UUID)
+    sso_…  CLI session token: user-scoped, short-lived (name or UUID)
 
 Commands
   Secrets
@@ -91,7 +92,7 @@ Options
     -V, --version         print version
 
 Credentials:  use env SS_URL / SS_TOKEN / SS_PROJECT, or run
-    corvus login --url … --token … --project …
+    corvus login --url … --token … [--project …]   (project optional for pat_…/sso_…)
 """
 
 
@@ -139,7 +140,7 @@ def _save_config(url: str, token: str, project: str) -> None:
 def _token_kind(token: str) -> str:
     if token.startswith("ss_"):
         return "machine"
-    if token.startswith("pat_"):
+    if token.startswith("pat_") or token.startswith("sso_"):
         return "pat"
     return "unknown"
 
@@ -153,7 +154,7 @@ def _require_creds() -> tuple[str, str, str, str]:
         )
     kind = _token_kind(c["token"])
     if kind == "unknown":
-        sys.exit("token must start with ss_… or pat_…")
+        sys.exit("token must start with ss_…, pat_…, or sso_…")
     return c["url"].rstrip("/"), c["token"], c.get("project") or "", kind
 
 
@@ -169,7 +170,7 @@ def _require_project() -> str:
 def _require_pat() -> tuple[str, str]:
     base, token, _, kind = _require_creds()
     if kind != "pat":
-        sys.exit("this command requires a pat_… token")
+        sys.exit("this command requires a pat_… or sso_… token")
     return base, token
 
 
@@ -230,7 +231,7 @@ def _api(
     """Call /eso/v1 path (absolute under base)."""
     base, token, _, kind = _require_creds()
     if pat_only and kind != "pat":
-        sys.exit("this command requires a pat_… token")
+        sys.exit("this command requires a pat_… or sso_… token")
     return _http(
         method, f"{base}/eso/v1{path}", token=token, body=body, query=query
     )
@@ -309,7 +310,7 @@ def _admin_api(
         return _mgmt_api(method, path, query=query)
     except SystemExit as e:
         if "403" in str(e):
-            sys.exit(f"{e}\nhint: requires a global admin pat_… token")
+            sys.exit(f"{e}\nhint: requires a global admin pat_… or sso_… token")
         raise
 
 
@@ -578,7 +579,7 @@ def _out(args) -> str:
 
 
 def _resolve_project_if_needed(url: str, token: str, project: str) -> str:
-    if _UUID_RE.match(project) or not token.startswith("pat_"):
+    if _UUID_RE.match(project) or _token_kind(token) != "pat":
         return project
     data = _http(
         "GET",
@@ -642,29 +643,32 @@ def cmd_login(args: argparse.Namespace) -> None:
     url = (args.url or _env_first(ENV_URL) or "").rstrip("/")
     token = args.token or _env_first(ENV_TOKEN) or ""
     project = args.project or _env_first(*ENV_PROJECT_ALIASES) or ""
-    if not (url and token and project):
-        sys.exit("login needs --url, --token, and --project")
+    if not (url and token):
+        sys.exit("login needs --url and --token")
     kind = _token_kind(token)
     if kind == "unknown":
-        sys.exit("token must be ss_… or pat_…")
+        sys.exit("token must be ss_…, pat_…, or sso_…")
     if kind == "machine" and not _UUID_RE.match(project):
-        sys.exit("machine tokens require project UUID")
+        sys.exit("machine tokens require --project UUID")
     if args.token:
         print(
             "warning: --token is visible in process listings; "
             "prefer SS_TOKEN env var",
             file=sys.stderr,
         )
-    if kind == "pat":
+    if kind == "pat" and project:
         project = _resolve_project_if_needed(url, token, project)
     # Validate before saving so a failed login does not write a bad config.
     try:
-        _http(
-            "GET",
-            f"{url.rstrip('/')}/eso/v1/projects/{urllib.parse.quote(project, safe='')}/secrets",
-            token=token,
-            query={"meta": "1"},
-        )
+        if project:
+            _http(
+                "GET",
+                f"{url.rstrip('/')}/eso/v1/projects/{urllib.parse.quote(project, safe='')}/secrets",
+                token=token,
+                query={"meta": "1"},
+            )
+        else:
+            _http("GET", f"{url.rstrip('/')}/eso/v1/projects", token=token)
     except SystemExit as e:
         sys.exit(f"login check failed: {e}")
     _save_config(url, token, project)
@@ -737,7 +741,7 @@ def cmd_get(args: argparse.Namespace) -> None:
                 sys.exit(
                     f"{msg}\n"
                     f"hint: this token cannot reveal secrets (service-read). "
-                    f"Use a service-reveal token or a pat_… token."
+                    f"Use a service-reveal token or a pat_…/sso_… token."
                 )
             if "forbidden" in low or "403" in msg:
                 sys.exit(
@@ -1170,7 +1174,7 @@ def cmd_reveal(args: argparse.Namespace) -> None:
             sys.exit(
                 f"{msg}\n"
                 f"hint: this token cannot reveal secrets (service-read). "
-                f"Use a service-reveal token or a pat_… token."
+                f"Use a service-reveal token or a pat_…/sso_… token."
             )
         if "forbidden" in low and "approval" not in low:
             sys.exit(
@@ -1410,10 +1414,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd")
 
-    pl = sub.add_parser("login", aliases=["configure"])
+    pl = sub.add_parser(
+        "login",
+        aliases=["configure"],
+        help="save credentials (--project optional for pat_…/sso_… tokens)",
+    )
     pl.add_argument("--url")
     pl.add_argument("--token")
-    pl.add_argument("--project")
+    pl.add_argument("--project", help="project UUID (machine) or name/UUID (pat_…/sso_…)")
     pl.set_defaults(func=cmd_login)
 
     pp = sub.add_parser("project")
@@ -1432,7 +1440,7 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--since")
     pg.add_argument("--until")
     pg.add_argument("--admin", action="store_true")
-    pg.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pg.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pg)
     pg.set_defaults(func=cmd_get)
 
@@ -1440,7 +1448,7 @@ def build_parser() -> argparse.ArgumentParser:
     prv.add_argument("resource", nargs="?", default="secret")
     prv.add_argument("name", nargs="?")
     prv.add_argument("--reason", default="")
-    prv.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    prv.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(prv)
     prv.set_defaults(func=cmd_reveal)
 
@@ -1449,14 +1457,14 @@ def build_parser() -> argparse.ArgumentParser:
     pap.add_argument("name", nargs="?")
     pap.add_argument("--minutes", type=int, default=15,
                     help="grant duration: 15, 60, 240, or 1440")
-    pap.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pap.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pap)
     pap.set_defaults(func=cmd_approve)
 
     pdy = sub.add_parser("deny")
     pdy.add_argument("request_id", nargs="?")
     pdy.add_argument("name", nargs="?")
-    pdy.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pdy.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pdy)
     pdy.set_defaults(func=cmd_deny)
 
@@ -1466,7 +1474,7 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--team")
     pd.add_argument("--group")
     pd.add_argument("--all", action="store_true")
-    pd.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pd.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     pd.add_argument("--yes", action="store_true",
                     help="confirm destructive delete (team/project/trash purge)")
     _add_output(pd)
@@ -1487,7 +1495,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="token key allow-list: comma/space-separated exact keys and/or "
         "globs (default: all keys)",
     )
-    pc.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pc.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_value_flags(pc)
     _add_output(pc)
     pc.set_defaults(func=cmd_create)
@@ -1496,7 +1504,7 @@ def build_parser() -> argparse.ArgumentParser:
         pa = sub.add_parser(alias)
         pa.add_argument("resource")
         pa.add_argument("name", nargs="?")
-        pa.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+        pa.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
         _add_value_flags(pa)
         _add_output(pa)
         pa.set_defaults(func=cmd_apply)
@@ -1505,7 +1513,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("resource")
     pr.add_argument("name", nargs="?")
     pr.add_argument("--all", action="store_true")
-    pr.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pr.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pr)
     pr.set_defaults(func=cmd_restore)
 
@@ -1524,7 +1532,7 @@ def build_parser() -> argparse.ArgumentParser:
     pgr.add_argument("--sa")
     pgr.add_argument("--role",
                      help="secret-read | secret-write | secret-reveal")
-    pgr.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pgr.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pgr)
     pgr.set_defaults(func=cmd_grant)
 
@@ -1532,7 +1540,7 @@ def build_parser() -> argparse.ArgumentParser:
     pub.add_argument("resource", nargs="?", default="secret")
     pub.add_argument("name", nargs="?")
     pub.add_argument("binding", nargs="?")
-    pub.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pub.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pub)
     pub.set_defaults(func=cmd_unbind)
 
@@ -1548,7 +1556,7 @@ def build_parser() -> argparse.ArgumentParser:
     pset.add_argument("--default-access-mode", dest="default_access_mode",
                       choices=("inherit", "restricted"))
     pset.add_argument("--description")
-    pset.add_argument("--project", help="target project (UUID, or unique name for a PAT)")
+    pset.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_output(pset)
     pset.set_defaults(func=cmd_settings)
 

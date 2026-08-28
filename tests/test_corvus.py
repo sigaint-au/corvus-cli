@@ -51,7 +51,7 @@ def write_config(ss, token="ss_t", project=PID, url="http://h"):
 def capture(calls, value=None):
     value = {"ok": True} if value is None else value
 
-    def wrapped(method, path, *, body=None, query=None, project=None):
+    def wrapped(method, path, *, body=None, query=None, project=None, token=None):
         calls.append((method, path, body, query, project))
         return value
 
@@ -81,6 +81,52 @@ def test_login_writes_config(ss, cfg_path):
     text = cfg_path.read_text()
     assert "https://secrets.example" in text
     assert "ss_test" in text
+
+
+def test_login_sso_without_project_ok(ss, cfg_path, capsys):
+    with mock.patch.object(ss, "_http", return_value={"items": []}) as http:
+        ss.main(
+            [
+                "login",
+                "--url",
+                "https://secrets.example/",
+                "--token",
+                "sso_test",
+            ]
+        )
+    text = cfg_path.read_text()
+    assert "sso_test" in text
+    assert http.call_args[0][1] == "https://secrets.example/eso/v1/projects"
+
+
+def test_login_sso_with_project_resolves_name(ss, cfg_path):
+    def http(method, path, *, body=None, query=None, token=None):
+        if path.endswith("/projects") and query and query.get("name"):
+            return {"items": [{"name": "ios-app", "id": "p1"}]}
+        return {}
+
+    with mock.patch.object(ss, "_http", side_effect=http) as http:
+        ss.main(
+            [
+                "login",
+                "--url",
+                "https://secrets.example/",
+                "--token",
+                "sso_test",
+                "--project",
+                "ios-app",
+            ]
+        )
+    assert any(c.args[1].endswith("/projects/p1/secrets") for c in http.call_args_list)
+
+
+def test_sso_token_works_for_pat_only_commands(ss):
+    calls = []
+    with mock.patch.object(ss, "_http", side_effect=capture(calls)):
+        write_config(ss, token="sso_test")
+        ss.main(["get", "projects"])
+    assert calls[0][0] == "GET"
+    assert "/eso/v1/projects" in calls[0][1]
 
 
 def test_get_secrets_list(ss, capsys):

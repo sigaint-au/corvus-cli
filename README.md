@@ -21,8 +21,8 @@ Env **or** `~/.config/corvus/config` (`0600`). **Env wins.**
 | Env | Meaning |
 |-----|---------|
 | `SS_URL` | Base URL (no trailing slash) |
-| `SS_TOKEN` | `ss_…` machine token **or** `pat_…` PAT |
-| `SS_PROJECT` | Project UUID (`ss_…`) or UUID/name (`pat_…`) |
+| `SS_TOKEN` | `ss_…` machine token, `pat_…` PAT, **or** `sso_…` CLI session token |
+| `SS_PROJECT` | Project UUID (`ss_…`) or UUID/name (`pat_…`/`sso_…`) |
 | `PID` | Alias for `SS_PROJECT` |
 | `SS_TIMEOUT` | HTTP timeout in seconds (default 60, min 5) |
 
@@ -30,6 +30,7 @@ Env **or** `~/.config/corvus/config` (`0600`). **Env wins.**
 |-------|---------|
 | `ss_…` | UUID only |
 | `pat_…` | UUID or unique **name** |
+| `sso_…` | UUID or unique **name** (short-lived, user-scoped) |
 
 ```bash
 # Machine token
@@ -38,11 +39,13 @@ corvus login \
   --token ss_… \
   --project 31a70875-7d6a-40a7-a315-751f8a7ee38f
 
-# PAT (name ok)
+# PAT or sso_ session token (name ok, --project optional)
 corvus login \
   --url https://secrets.example.com \
-  --token pat_… \
-  --project ios-app
+  --token pat_…
+
+# Paste from the web UI "Copy login command" flow
+corvus login --url https://secrets.example.com --token sso_…
 
 # Env-only (CI / no config file)
 export SS_URL=https://secrets.example.com
@@ -365,10 +368,11 @@ export REQUIRED_KEY="$val"
 
 ---
 
-## Org & admin (PAT required)
+## Org & admin (PAT or CLI session token required)
 
-Teams, projects, members, tokens, trash, users, and audit need a **`pat_…`** token.
-Machine tokens (`ss_…`) only manage secrets in one project.
+Teams, projects, members, tokens, trash, users, and audit need a **`pat_…`**
+or **`sso_…`** token. Machine tokens (`ss_…`) only manage secrets in one
+project.
 
 Most project-scoped commands act on the current project. Add `--project NAME|UUID`
 to target another project without switching (PAT resolves names):
@@ -451,7 +455,7 @@ Server settings (SMTP, LDAP, OIDC, banners, etc.) are **not** exposed in the CLI
 | Task | Command |
 |------|---------|
 | Usage | `corvus` |
-| Login | `corvus login --url … --token … --project …` |
+| Login | `corvus login --url … --token … [--project …]` |
 | Switch project | `corvus project [name\|uuid]` |
 | List / get secrets | `get secrets` / `get secret KEY` |
 | Script value | `get secret KEY -o value` |

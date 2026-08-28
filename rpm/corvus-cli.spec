@@ -10,8 +10,9 @@ BuildArch:      noarch
 Requires:       python3 >= 3.9
 
 %description
-Command-line client for Corvus. Uses project machine tokens
-(ss_…) against the /eso/v1 API to list, get, edit, and delete secrets.
+Command-line client for Corvus. Uses machine tokens (ss_…), personal access
+tokens (pat_…), or short-lived CLI session tokens (sso_…) against the /eso/v1
+and /api/v1/manage APIs to list, get, edit, and delete secrets.
 Credentials from ~/.config/corvus/config or SS_URL / SS_TOKEN / SS_PROJECT.
 
 %prep

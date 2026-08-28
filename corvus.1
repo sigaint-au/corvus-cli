@@ -20,7 +20,7 @@ API for secret CRUD and the
 API (personal access tokens) for teams, projects, members, groups, tokens,
 trash, audit, and users.
 .PP
-Two token kinds are supported:
+Three token kinds are supported:
 .TP
 .B ss_...
 Machine token. Scoped to one project; lists, reads, and writes secrets in
@@ -32,6 +32,13 @@ Requires a project
 Personal access token. Acts as the owning user under RLS; can access any
 team or project the user is a member of (by UUID or unique name) and can run
 org and admin commands.
+.TP
+.B sso_...
+CLI session token, minted by the web UI "Copy login command" flow and pasted
+into a
+.BR "corvus login"
+command. User-scoped, short-lived (TTL set by the server), and behaves like
+.IR pat_... .
 .PP
 With no arguments,
 .B corvus
@@ -41,13 +48,17 @@ available via
 .SH COMMANDS
 .TP
 .B login, configure
-.RB [ \-\-url URL \-\-token TOKEN \-\-project PROJECT ]
+.RB [ \-\-url URL \-\-token TOKEN [\-\-project PROJECT] ]
 Store credentials for future runs.
+.I \-\-project
+is required only for
+.IR ss_...
+tokens.
 .TP
 .BI project " [ NAME ]"
 Show the current default project, or switch to
 .IR NAME
-(name for a PAT, UUID for a machine token).
+(name for a PAT or CLI session token, UUID for a machine token).
 .TP
 .BI "get " RESOURCE " [name]"
 List or fetch a resource. See the RESOURCES section for valid values.
@@ -146,7 +157,7 @@ List access requests
 Show secret or org audit.
 .TP
 .BR users
-List users (global admin, PAT).
+List users (global admin, PAT or CLI session token).
 .PP
 The
 .BR create
@@ -161,7 +172,7 @@ Most subcommands accept a subset of the following:
 Output format: table (default), json, value, name, wide.
 .TP
 .BI \-\-project PROJECT
-Project reference: UUID, or unique name for a PAT.
+Project reference: UUID, or unique name for a PAT or CLI session token.
 .TP
 .BI \-\-team TEAM
 Team reference for team-scoped resources.
@@ -219,10 +230,14 @@ command refuses and exits.
 Base URL of the server (no trailing slash).
 .TP
 .B SS_TOKEN
-Token: ss_... or pat_....
+Token: ss_... , pat_..., or sso_....
 .TP
 .B SS_PROJECT
-Default project (UUID, or name with a PAT). Alias:
+Default project (UUID, or name with a
+.I pat_...
+or
+.IR sso_...
+token). Alias:
 .BR PID .
 .PP
 Environment variables take precedence over the config file.
