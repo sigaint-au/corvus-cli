@@ -510,7 +510,7 @@ def _proj_api(
 
     Inputs:
         method, path (suffix after ``/projects/<id>``), body/query, optional
-        project override (UUID or — for PAT — unique name).
+        project override (UUID or unique name for PAT).
 
     Outputs:
         Parsed JSON; exits when project missing or UUID rule violated.

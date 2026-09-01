@@ -3,7 +3,7 @@
 Description:
     Builds the top-level :class:`argparse.ArgumentParser` with all subcommands,
     global ``--no-trunc`` handling, and shell completion plumbing. Thin parser
-    only — handlers live in :mod:`corvus_cli.commands.*`.
+    only; handlers live in :mod:`corvus_cli.commands.*`.
 
 Inputs:
     None direct; uses :mod:`corvus_cli.constants` for help text and

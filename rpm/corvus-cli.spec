@@ -19,7 +19,7 @@ Credentials from ~/.config/corvus/config or SS_URL / SS_TOKEN / SS_PROJECT.
 %setup -q
 
 %build
-# pure Python package — nothing to compile
+# pure Python package - nothing to compile
 
 %install
 install -D -m 0755 corvus %{buildroot}%{_bindir}/corvus

@@ -161,7 +161,7 @@ def cmd_project(args) -> None:
     vmsg = _validate_url(url)
     if vmsg and "localhost" not in vmsg:
         # In cmd_project switch path the URL came from config written by tests
-        # using http://h — allow it with a warning when running under test
+        # using http://h - allow it with a warning when running under test
         # (http mock). In real usage _warn_insecure_url still warns.
         import os as _os
 

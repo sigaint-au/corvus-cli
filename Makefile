@@ -13,7 +13,7 @@ check:
 	python3 -m py_compile corvus_cli/__init__.py corvus_cli/constants.py corvus_cli/config.py corvus_cli/api.py corvus_cli/output.py corvus_cli/parser.py corvus_cli/cli.py corvus_cli/commands/*.py
 	python3 corvus -h >/dev/null
 	pytest -q
-	python3 -m ruff check corvus_cli corvus tests/ 2>/dev/null || ruff check corvus_cli corvus tests/ 2>/dev/null || echo "ruff not installed — skipping"
+	python3 -m ruff check corvus_cli corvus tests/ 2>/dev/null || ruff check corvus_cli corvus tests/ 2>/dev/null || echo "ruff not installed - skipping"
 
 install:
 	install -D -m 0755 corvus $(DESTDIR)/usr/bin/corvus

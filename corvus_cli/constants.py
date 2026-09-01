@@ -42,7 +42,7 @@ _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
-# Server RBAC role names — mirror app/routes/mgmt_api.
+# Server RBAC role names, mirror app/routes/mgmt_api.
 _TEAM_ROLES = ("team-viewer", "team-member", "team-admin", "team-owner")
 _PROJECT_ROLES = (
     "project-read",
@@ -161,7 +161,7 @@ Credentials:  use env SS_URL / SS_TOKEN / SS_PROJECT, or run
 
 # Bash/zsh/fish completion snippets (kept tiny; emitted via `corvus completion <shell>`).
 _COMPLETION_SH: dict[str, str] = {
-    "bash": r"""# corvus bash completion — source or drop in /etc/bash_completion.d/corvus
+    "bash": r"""# corvus bash completion - source or drop in /etc/bash_completion.d/corvus
 _corvus_completions() {
   local cur="${COMP_WORDS[COMP_CWORD]}" cmds="login project get create delete apply set reveal approve deny restore transfer grant unbind export settings help completion"
   local resources="secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user"
@@ -171,7 +171,7 @@ _corvus_completions() {
 complete -F _corvus_completions corvus
 """,
     "zsh": r"""#compdef corvus
-# corvus zsh completion — put in $fpath as _corvus
+# corvus zsh completion - put in $fpath as _corvus
 _corvus() {
   local -a cmds=(login project get create delete apply set reveal approve deny restore transfer grant unbind export settings help completion)
   local -a res=(secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user)
@@ -179,7 +179,7 @@ _corvus() {
 }
 compdef _corvus corvus
 """,
-    "fish": r"""# corvus fish completion — put in ~/.config/fish/completions/corvus.fish
+    "fish": r"""# corvus fish completion - put in ~/.config/fish/completions/corvus.fish
 complete -c corvus -n '__fish_seen_subcommand_from get create delete apply set restore grant' -a 'secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user'
 complete -c corvus -n 'not __fish_seen_subcommand_from login project get create delete apply set reveal approve deny restore transfer grant unbind export settings help completion' -a 'login project get create delete apply set reveal approve deny restore transfer grant unbind export settings help completion'
 """,
