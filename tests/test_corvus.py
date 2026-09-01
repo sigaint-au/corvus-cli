@@ -524,7 +524,7 @@ def test_export_env(ss, capsys):
         "_mgmt_proj_api",
         return_value={"mode": "plain", "items": [{"key": "A", "value": "v1", "note": ""}]},
     ):
-        ss.main(["export", "-o", "env"])
+        ss.main(["export", "-o", "env", "--yes"])
     assert "A=v1" in capsys.readouterr().out
 
 

@@ -5,6 +5,7 @@ description = "Command-line client for Corvus"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.9"
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -13,8 +14,18 @@ dev = [
     "ruff==0.16.3",
 ]
 
+[project.scripts]
+corvus = "corvus_cli.cli:main"
+
 [project.urls]
 Source = "https://git.sigaint.au/Sigaint/corvus-cli"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["corvus_cli*"]
 
 # ── Ruff ────────────────────────────────────────────────────────────
 [tool.ruff]
@@ -28,7 +39,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["corvus"]
+known-first-party = ["corvus_cli"]
 
 [tool.ruff.format]
 quote-style = "double"
