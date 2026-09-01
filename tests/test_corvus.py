@@ -738,3 +738,71 @@ def test_create_token_default_name_echo(ss, capsys):
         ss.main(["create", "token"])
     assert calls[0][2]["name"] == "cli"
     assert "default token name" in capsys.readouterr().err
+
+
+# ── folder commands ──────────────────────────────────────────────
+
+
+def test_get_folders_hits_manage(ss):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["get", "folders"])
+    assert calls[0][1] == "/folders"
+
+
+def test_get_folders_renders_table(ss, capsys):
+    payload = {
+        "items": [
+            {"id": "f1", "path": "ops/prod", "name": "prod", "access_mode": "inherit"},
+            {"id": "f2", "path": "ops/staging", "name": "staging", "access_mode": "restricted"},
+        ]
+    }
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", return_value=payload):
+        ss.main(["get", "folders"])
+    out = capsys.readouterr().out
+    assert "ops/prod" in out
+    assert "ops/staging" in out
+    assert "restricted" in out
+    assert "inherit" in out
+
+
+def test_create_folder_hits_manage(ss):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["create", "folder", "ops/prod"])
+    assert calls[0][1] == "/folders"
+    assert calls[0][2] == {"path": "ops/prod"}
+
+
+def test_delete_folder_hits_manage(ss):
+    calls = []
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_mgmt_proj_api", side_effect=capture(calls)):
+        ss.main(["delete", "folder", "f1"])
+    assert calls[0][1] == "/folders/f1"
+    assert calls[0][0] == "DELETE"
+
+
+def test_delete_folder_requires_name(ss):
+    write_config(ss, token="pat_test")
+    with pytest.raises(SystemExit) as e:
+        ss.main(["delete", "folder"])
+    assert "ID" in str(e.value)
+
+
+def test_secret_list_shows_folder_col(ss, capsys):
+    payload = {
+        "items": [
+            {"key": "K1", "kind": "plain", "note": "", "folder_path": "ops/prod"},
+            {"key": "K2", "kind": "plain", "note": "", "folder_path": None},
+        ]
+    }
+    write_config(ss, token="pat_test")
+    with mock.patch.object(ss, "_proj_api", return_value=payload):
+        ss.main(["get", "secrets"])
+    out = capsys.readouterr().out
+    assert "FOLDER" in out
+    assert "ops/prod" in out

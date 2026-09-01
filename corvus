@@ -78,6 +78,11 @@ Commands
     get trash | restore trash ID | delete trash ID
     restore trash --all | delete trash --all          # bulk restore / purge
 
+  Folders
+    get folders                        list folders for current project
+    create folder PATH                 create a folder (e.g. 'ops/prod')
+    delete folder ID                   delete an empty folder (use from list)
+
   Admin (global)
     get users [ -l QUERY ] | get audit [ --source project|org|secret|access ]
     get history KEY                   version history of a secret
@@ -503,18 +508,23 @@ def _emit(obj: object, output: str) -> None:
                 ],
             )
         elif "key" in sample:
-            _print_table(
-                ["KEY", "KIND", "NOTE", "EXPIRES"],
-                [
-                    [
-                        it.get("key", ""),
-                        it.get("kind", ""),
-                        it.get("note", ""),
-                        it.get("expires_at") or it.get("deleted_at") or "",
-                    ]
-                    for it in items
-                ],
-            )
+            has_folder = any(it.get("folder_path") for it in items)
+            headers = ["KEY"]
+            if has_folder:
+                headers.append("FOLDER")
+            headers.extend(["KIND", "NOTE", "EXPIRES"])
+            rows = []
+            for it in items:
+                row = [it.get("key", "")]
+                if has_folder:
+                    row.append(it.get("folder_path") or "")
+                row.extend([
+                    it.get("kind", ""),
+                    it.get("note", ""),
+                    it.get("expires_at") or it.get("deleted_at") or "",
+                ])
+                rows.append(row)
+            _print_table(headers, rows)
         elif "email" in sample:
             _print_table(
                 ["EMAIL", "NAME", "ROLE", "USER_ID"],
@@ -813,6 +823,9 @@ def cmd_get(args: argparse.Namespace) -> None:
     if res in ("trash",):
         _emit(_mgmt_proj_api("GET", "/trash", project=project), out)
         return
+    if res in ("folders",):
+        _emit(_mgmt_proj_api("GET", "/folders", project=project), out)
+        return
     if res in ("history",) and name:
         key = urllib.parse.quote(name, safe="/")
         _emit(_mgmt_proj_api("GET", f"/secrets/{key}/history", project=project), out)
@@ -911,6 +924,14 @@ def cmd_delete(args: argparse.Namespace) -> None:
             out,
         )
         return
+    if res in ("folder", "folders"):
+        if not name:
+            sys.exit("delete folder ID")
+        _emit(
+            _mgmt_proj_api("DELETE", f"/folders/{urllib.parse.quote(name, safe='')}", project=project),
+            out,
+        )
+        return
     if res == "group-member":
         cmd_group_member(args, remove=True)
         return
@@ -994,6 +1015,14 @@ def cmd_create(args: argparse.Namespace) -> None:
         return
     if res == "group-member":
         cmd_group_member(args, remove=False)
+        return
+    if res in ("folder", "folders"):
+        if not name:
+            sys.exit("create folder PATH")
+        _emit(
+            _mgmt_proj_api("POST", "/folders", body={"path": name}, project=project),
+            out,
+        )
         return
     if res in ("project", "projects"):
         if not name or not team:
