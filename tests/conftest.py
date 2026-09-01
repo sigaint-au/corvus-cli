@@ -72,6 +72,21 @@ class _CombinedPatch:
             cm = _orig_patch_object(mod, self.attribute, new)
             cm.__enter__()
             self.extra_cms.append(cm)
+        # Special mapping: patching _http should also make pagination-aware
+        # helpers return paginated-friendly results (first page only).
+        if self.attribute == "_http":
+            try:
+                api_mod = importlib.import_module("corvus_cli.api")
+                if hasattr(api_mod, "_http_with_headers"):
+                    def _wrap_http_with_headers(*a, **kw):  # type: ignore[no-untyped-def]
+                        res = mock_obj(*a, **kw)
+                        # Normalize SystemExit propagation
+                        return (res, {})
+                    cm2 = _orig_patch_object(api_mod, "_http_with_headers", _wrap_http_with_headers)
+                    cm2.__enter__()
+                    self.extra_cms.append(cm2)
+            except Exception:
+                pass
         return mock_obj
 
     def __exit__(self, *exc):

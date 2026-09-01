@@ -3,9 +3,10 @@
 Description:
     Thin ``main()`` dispatcher: prints version/usage for no-arg/``-h``/
     ``--version``, builds the :mod:`corvus_cli.parser` parser, wires
-    ``--no-trunc`` into :mod:`corvus_cli.output`, and invokes the selected
-    subcommand handler. Safe to import (no side-effects beyond re-exporting
-    public symbols for legacy tests importing ``corvus`` as a module).
+    ``--no-trunc`` into :mod:`corvus_cli.output`, pagination flags into
+    :mod:`corvus_cli.api`, and invokes the selected subcommand handler.
+    Safe to import (no side-effects beyond re-exporting public symbols for
+    legacy tests importing ``corvus`` as a module).
 
 Inputs:
     Command-line ``argv`` list (defaults to ``sys.argv[1:]``).
@@ -40,8 +41,10 @@ def main(argv: list[str] | None = None) -> None:
     Description:
         Normalizes ``argv``, handles ``-h``/``--help``/``--version``/empty early
         exits, builds the parser, propagates ``--no-trunc`` to the output
-        module, and invokes the chosen command. When no subcommand matches
-        (e.g. ``corvus`` with empty argv is already handled), prints usage.
+        module and ``--no-paginate``/``--limit``/``--page-size`` to the API
+        pagination layer, and invokes the chosen command. When no subcommand
+        matches (e.g. ``corvus`` with empty argv is already handled), prints
+        usage.
 
     Inputs:
         argv: list of string args without the program name; defaults to
@@ -69,6 +72,17 @@ def main(argv: list[str] | None = None) -> None:
         from corvus_cli.output import set_no_trunc
 
         set_no_trunc(True)
+    # Wire pagination flags into api layer.
+    try:
+        from corvus_cli.api import set_pagination_config
+
+        set_pagination_config(
+            no_paginate=bool(getattr(args, "no_paginate", False)),
+            limit=getattr(args, "limit", None),
+            page_size=getattr(args, "page_size", None),
+        )
+    except Exception:
+        pass
     if not getattr(args, "func", None):
         print(USAGE, end="")
         sys.exit(0)

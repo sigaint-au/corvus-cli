@@ -24,7 +24,7 @@ printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
 - **Access control** — per-secret ACL mode, reveal approval, bindings (`grant`/`unbind`), project settings
 - **Org** — teams, projects, members, groups, machine tokens (scoped), trash
 - **Admin** — users, audit (`project`/`org`/`secret`/`access`), access requests
-- **UX** — tables/JSON/value/name, `--no-trunc`, did-you-mean hints, pagination warnings, env-override warning
+- **UX** — tables/JSON/value/name, `--no-trunc`, did-you-mean hints, auto-pagination with `--limit`/`--page-size`/`--no-paginate`, env-override warning
 - **Safety** — atomic `0600` config writes, HTTPS enforcement, clamped timeout, `export --yes` gate, perm warnings
 - **Shell** — completion for `bash`/`zsh`/`fish`, paste-safe `sso_…` login, stdin/env value ingestion
 
@@ -105,6 +105,9 @@ corvus get secrets
 | `SS_PROJECT` | Project UUID (`ss_…`) or UUID/name (`pat_…`/`sso_…`) |
 | `PID` | Alias for `SS_PROJECT` |
 | `SS_TIMEOUT` | HTTP timeout seconds (default 60, clamped 5–300) |
+| `SS_PAGE_SIZE` | Default page size hint for list pagination (overridden by `--page-size`) |
+| `SS_MAX_PAGES` | Safety cap on pages to fetch (default 100) |
+| `SS_MAX_ITEMS` | Safety cap on total items (default 50000) |
 
 | Token | Project | Scope |
 |-------|---------|-------|
@@ -145,6 +148,8 @@ Unset `SS_PROJECT`/`PID` after switch or env still overrides the file.
 corvus get secrets
 corvus get secrets -l api -o json
 corvus get secrets --no-trunc          # disable 48-char truncation
+corvus get secrets --limit 50 --page-size 20   # pagination controls
+corvus get secrets --no-paginate       # first page only (disable auto-pagination)
 corvus get secret API_KEY
 corvus get secret API_KEY -o value     # for scripts
 corvus get secret prod/db/password -o value
@@ -280,8 +285,8 @@ corvus settings --require-reveal-approval on --default-access-mode restricted
 ### Export & trash (PAT)
 
 ```bash
-corvus export -o env --yes > .env          # --yes required (audited)
-corvus export -o json --yes
+corvus export -o env --yes > .env          # --yes required (audited), auto-paginated
+corvus export -o json --yes --limit 100
 corvus get trash
 corvus restore trash <secret-uuid>
 corvus delete trash <secret-uuid> --yes    # permanent purge
@@ -289,7 +294,9 @@ corvus restore trash --all
 corvus delete trash --all --yes
 ```
 
-`export` warns with the count and when the server paginates.
+`export` warns with the count; all list endpoints auto-paginate across
+cursor/`page_token`/`Link: rel="next"`/`has_more`+`page`/`offset`/`total` styles.
+Caps: `SS_MAX_PAGES` (100) / `SS_MAX_ITEMS` (50000) and loop detection stop runaway loops.
 
 ### Audit & users (global admin PAT)
 
@@ -311,7 +318,9 @@ corvus transfer team Platform --email new-owner@example.com
 | `name` | Key/name/id only |
 | `wide` | Alias for `table` |
 
-Global flag: `--no-trunc` disables 48-char cell truncation (e.g. `corvus get secrets --no-trunc`). Truncation still escapes newlines.
+Global flags: `--no-trunc` disables 48-char cell truncation (e.g. `corvus get secrets --no-trunc`);
+`--no-paginate`, `--limit N`, `--page-size N` control auto-pagination on all `get`/`export` list endpoints
+(with `SS_PAGE_SIZE`/`SS_MAX_PAGES`/`SS_MAX_ITEMS` env overrides). Truncation still escapes newlines.
 
 Typo helper: `unknown resource 'secrets' — did you mean 'secrets'?` for close matches.
 

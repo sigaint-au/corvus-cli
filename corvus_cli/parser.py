@@ -80,6 +80,48 @@ def _add_no_trunc(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_pagination(p: argparse.ArgumentParser) -> None:
+    """Attach pagination flags to a parser.
+
+    Description:
+        Adds ``--no-paginate``, ``--limit`` and ``--page-size`` for list
+        endpoints that return ``{"items": [...]}``. Transparent auto-pagination
+        is on by default; these flags control it.
+
+    Inputs:
+        p: parser or sub-parser to extend.
+
+    Outputs:
+        None; mutates *p*.
+
+    Example:
+        >>> import argparse; p = argparse.ArgumentParser()
+        >>> _add_pagination(p)
+        >>> p.parse_args(["--no-paginate"]).no_paginate
+        True
+    """
+    p.add_argument(
+        "--no-paginate",
+        action="store_true",
+        help="disable auto-pagination (return first page only)",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="max items to return (client-side cap; paginates until N)",
+    )
+    p.add_argument(
+        "--page-size",
+        type=int,
+        default=None,
+        dest="page_size",
+        metavar="N",
+        help="page size hint sent to server (default from server)",
+    )
+
+
 def _add_value_flags(p: argparse.ArgumentParser) -> None:
     """Attach secret-value/metadata/access flags to parser *p*.
 
@@ -215,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--project", help="target project (UUID, or unique name for a pat_…/sso_…)")
     _add_no_trunc(pg)
     _add_output(pg)
+    _add_pagination(pg)
     pg.set_defaults(func=cmd_get)
 
     prv = sub.add_parser("reveal")
@@ -328,6 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--yes", action="store_true", help="confirm bulk plaintext export")
     pe.add_argument("--project", help="alias for positional project")
     _add_no_trunc(pe)
+    _add_pagination(pe)
     pe.set_defaults(func=cmd_export)
 
     pset = sub.add_parser("settings")
