@@ -4,11 +4,13 @@ Description:
     Implements ``corvus ssh sync``, ``corvus ssh config`` and
     ``corvus ssh _ensure`` (lazy ``Match exec`` helper). Secrets that are
     SSH private keys are stored in Corvus. Out of the box it discovers
-    ``kind=ssh`` secrets, including the default ``corvus-agent`` layout
-    ``hosts/<hostname>/users/<account>`` (key_prefix ``hosts/``). This
-    module materializes them to a local key directory (0700, files 0600)
-    and generates an OpenSSH ``Include`` fragment so native ``ssh <host>``
-    works without a wrapper.
+    ``kind=ssh`` secrets, including the ``corvus-agent`` layout
+    ``hosts/<hostname>/users/<account>/ssh`` (``_ssh_account_key`` with
+    ``key_prefix`` ``hosts/``) and legacy ``hosts/<hostname>/users/<account>``.
+    The companion ``hosts/<hostname>/users/<account>/password`` (``_account_key``)
+    is ignored for SSH. This module materializes them to a local key directory
+    (0700, files 0600) and generates an OpenSSH ``Include`` fragment so
+    native ``ssh <host>`` works without a wrapper.
 
 Inputs:
     Credentials via :mod:`corvus_cli.api` (``_proj_api``), filesystem
@@ -22,7 +24,7 @@ Example:
     >>> # corvus ssh sync --dry-run  -> lists hosts without fetching values
     >>> # corvus ssh config install   -> adds Include to ~/.ssh/config
     >>> # corvus ssh _ensure web01
-    >>> # with agent default: hosts/web01/users/deploy -> ssh web01 (User deploy)
+    >>> # with agent default: hosts/web01/users/deploy/ssh -> ssh web01 (User deploy)
 """
 
 from __future__ import annotations
@@ -91,16 +93,20 @@ def _sanitize_host(host: str) -> str:
 
 
 def _parse_agent_key(key: str) -> tuple[str, str] | None:
-    """Return (hostname, account) if *key* matches ``<prefix><host>/users/<acct>``.
+    """Return (hostname, account) if *key* matches agent SSH layout.
 
-    Matches the default ``corvus-agent`` layout ``hosts/<host>/users/<acct>``
-    and any custom ``key_prefix`` that still contains ``/users/``. Host and
-    account are single path segments without slashes.
+    Supports new ``hosts/<host>/users/<acct>/ssh`` (``_ssh_account_key``)
+    and legacy ``hosts/<host>/users/<acct>`` (backward compat). The companion
+    ``.../password`` (``_account_key``) is not SSH.
     """
-    if "/users/" not in key:
+    # ponytail: new agent splits account into /ssh (ssh) and /password (plain); only /ssh is SSH
+    if key.endswith("/password"):
+        return None
+    base = key[:-4] if key.endswith("/ssh") else key
+    if "/users/" not in base:
         return None
     # split on the last /users/ to handle prefix containing same string unlikely
-    left, _, acct = key.rpartition("/users/")
+    left, _, acct = base.rpartition("/users/")
     if not left or not acct or "/" in acct or "\\" in acct or ".." in acct:
         return None
     # host is last segment of left part
@@ -145,8 +151,9 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
     """Derive sync entries for *candidates* handling agent layout out of the box.
 
     Returns list of dicts {alias, aliases, file, key, user, hostname, kind}.
-    For agent key hosts/<host>/users/<acct> -> alias host (first per host) or host-acct,
-    file host-acct, user acct, hostname host.
+    For agent key hosts/<host>/users/<acct>/ssh (and legacy bare .../<acct>
+    for backward compat) -> alias host (first per host) or host-acct,
+    file host-acct, user acct, hostname host. Password .../password skipped.
     For manual keys -> alias derived from suffix/basename, file alias, no user.
     Host map overrides via rev_map.
     """
@@ -156,6 +163,9 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
     for it in candidates:
         key = it.get("key") or ""
         kind = it.get("kind") or ""
+        # ponytail: new agent splits account into /ssh (ssh) and /password (plain); skip password for ssh sync
+        if key.endswith("/password"):
+            continue
         if key in rev_map:
             alias = rev_map[key]
             try:
@@ -202,6 +212,28 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
         except SystemExit:
             continue
         raw.append({"alias": alias_norm, "aliases": [alias_norm], "file": alias_norm, "key": key, "user": None, "hostname": None, "kind": kind})
+
+    # ponytail: dedup legacy hosts/<h>/users/<a> vs new hosts/<h>/users/<a>/ssh -> prefer /ssh
+    seen_agent_keys: dict[tuple[str, str], dict] = {}
+    deduped: list[dict] = []
+    for e in raw:
+        if e.get("_agent") and e.get("hostname") and e.get("user"):
+            k = (e["hostname"], e["user"])  # type: ignore[assignment]
+            prev = seen_agent_keys.get(k)
+            if prev is None:
+                seen_agent_keys[k] = e
+                deduped.append(e)
+            else:
+                cur_is_ssh = e["key"].endswith("/ssh")
+                prev_is_ssh = prev["key"].endswith("/ssh")
+                if cur_is_ssh and not prev_is_ssh:
+                    idx = deduped.index(prev)
+                    deduped[idx] = e
+                    seen_agent_keys[k] = e
+                # else keep prev, drop cur
+        else:
+            deduped.append(e)
+    raw = deduped
 
     # Resolve collisions for agent host aliases: first per hostname keeps bare hostname
     seen_hostnames: dict[str, int] = {}
