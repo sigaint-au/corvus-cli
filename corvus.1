@@ -109,6 +109,16 @@ Export project secrets as plaintext (audited).
 .RB [ " --default-access-mode inherit|restricted " ]
 .RB [ " --description TEXT " ]
 Update project settings (project admin).
+.TP
+.B ssh
+.RB [ setup | list | status | sync | uninstall ]
+Native
+.BR ssh (1)
+to Corvus hosts. Requires
+.BR ssh-agent (1) .
+See
+.BR SSH
+below.
 .SH RESOURCES
 The
 .BR get
@@ -246,6 +256,10 @@ Environment variables take precedence over the config file.
 .B ~/.config/corvus/config
 Configuration file, mode 0600, written by
 .BR "corvus login".
+.TP
+.B ~/.ssh/config.d/corvus
+Generated OpenSSH Include fragment
+.RB ( "corvus ssh setup" / "corvus ssh sync" ).
 .SH EXAMPLES
 .TP
 List secrets:
@@ -272,6 +286,72 @@ Restrict a secret and grant a user:
 .TP
 Export secrets:
 .B corvus export --output env
+.TP
+SSH hosts (requires ssh-agent):
+.B corvus ssh setup
+.br
+.B ssh web01
+.SH SSH
+.B corvus ssh
+wires native
+.BR ssh (1)
+to Corvus
+.B kind=ssh
+secrets. Private keys are loaded into
+.BR ssh-agent (1)
+on first connect
+.RB ( ssh-add \-t );
+only
+.B .pub
+files are written locally.
+.PP
+Subcommands:
+.BR setup
+(install Include and discover hosts),
+.BR list ,
+.BR status ,
+.BR sync
+.RB [ \-\-eager ],
+.BR uninstall
+.RB [ \-\-purge ].
+.PP
+An agent must be reachable at
+.BR SSH_AUTH_SOCK .
+On Fedora and current RHEL, install the client and enable the user socket shipped by
+.BR openssh-clients :
+.PP
+.nf
+sudo dnf install -y openssh-clients
+systemctl --user enable --now ssh-agent.socket
+export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
+.fi
+.PP
+Add that
+.B export
+to
+.B ~/.bashrc
+so login shells see the socket. The systemd unit does not export
+.B SSH_AUTH_SOCK
+into interactive shells by itself (KDE Plasma does via
+.BR /etc/xdg/plasma-workspace/env/ssh-agent.sh ).
+.PP
+If
+.B systemctl --user cat ssh-agent.socket
+fails (older RHEL 9), start an agent in the current shell:
+.PP
+.nf
+eval "$(ssh-agent -s)"
+.fi
+.PP
+GNOME Workstation may already provide an agent via GNOME Keyring. Prefer the
+OpenSSH agent so
+.B ssh-add \-t
+(Corvus TTL) is honoured. See the README section
+.B ssh-agent on Fedora / RHEL
+for environment.d, verification with
+.B ssh-add \-l
+and
+.BR "corvus ssh status" .
 .SH EXIT STATUS
 0 on success, 1 on failure (missing credentials, HTTP error, invalid input).
 .SH SEE ALSO

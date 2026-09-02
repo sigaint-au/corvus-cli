@@ -397,41 +397,80 @@ def build_parser() -> argparse.ArgumentParser:
     try:
         from corvus_cli.commands.ssh import DEFAULT_FRAG, DEFAULT_PREFIX, DEFAULT_TTL, cmd_ssh  # noqa: F811
 
-        pssh = sub.add_parser("ssh", help="SSH host keys (sync/config/_ensure)")
+        pssh = sub.add_parser("ssh", help="native ssh <host> using Corvus keys")
         ssub = pssh.add_subparsers(dest="ssh_cmd")
-        # ssh sync
-        psync = ssub.add_parser("sync", help="fetch ssh keys and write Include fragment")
-        psync.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"secret prefix (default: {DEFAULT_PREFIX!r}; empty for kind=ssh only)")
-        psync.add_argument("--project", help="target project (UUID or name for pat_…/sso_…)")
-        psync.add_argument("--key-dir", dest="key_dir", help="key directory (default: $XDG_RUNTIME_DIR/corvus when set, else ~/.config/corvus/keys)")
-        psync.add_argument("--config-fragment", dest="config_fragment", help=f"fragment path (default: {DEFAULT_FRAG})")
-        psync.add_argument("--dry-run", action="store_true", help="list hosts without fetching values")
-        psync.add_argument("--clean", action="store_true", help="remove stale keys not in current set")
-        psync.add_argument("--no-fragment", action="store_true", help="do not write fragment")
-        psync.add_argument("--eager", action="store_true", help="fetch all private keys now (default: lazy, fetch on first ssh)")
+
+        def _ssh_discover(p: argparse.ArgumentParser) -> None:
+            p.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"secret prefix (default: {DEFAULT_PREFIX!r}; empty for kind=ssh only)")
+            p.add_argument("--project", help="target project (UUID or name for pat_…/sso_…)")
+
+        def _ssh_paths(p: argparse.ArgumentParser) -> None:
+            p.add_argument("--key-dir", dest="key_dir", help="directory for .pub files (default: $XDG_RUNTIME_DIR/corvus when set, else ~/.config/corvus/keys)")
+            p.add_argument("--config-fragment", dest="config_fragment", help=f"fragment path (default: {DEFAULT_FRAG})")
+            p.add_argument("--ssh-config", dest="ssh_config", help="ssh config path (default: ~/.ssh/config)")
+
+        psetup = ssub.add_parser("setup", help="once: wire ~/.ssh/config and discover hosts")
+        _ssh_discover(psetup)
+        _ssh_paths(psetup)
+        psetup.add_argument("--eager", action="store_true", help="also prefetch all keys into ssh-agent")
+        _add_no_trunc(psetup)
+        _add_output(psetup)
+        psetup.set_defaults(func=cmd_ssh)
+
+        psync = ssub.add_parser("sync", help="refresh host list (installs Include if needed)")
+        _ssh_discover(psync)
+        _ssh_paths(psync)
+        psync.add_argument("--dry-run", action="store_true", help="list hosts without fetching values (same as: corvus ssh list)")
+        psync.add_argument("--clean", action="store_true", help="remove leftover private files and orphan .pub files")
+        psync.add_argument("--no-fragment", action="store_true", help="do not write fragment or Include")
+        psync.add_argument("--eager", action="store_true", help="prefetch all keys into ssh-agent now")
         _add_no_trunc(psync)
         _add_output(psync)
         psync.set_defaults(func=cmd_ssh)
-        # ssh config
-        psc = ssub.add_parser("config", help="install/uninstall Include line in ~/.ssh/config")
-        psc.add_argument("config_action", nargs="?", choices=("install", "uninstall"), default="install", help="install or uninstall (default: install)")
-        psc.add_argument("--ssh-config", dest="ssh_config", help="ssh config path (default: ~/.ssh/config)")
-        psc.add_argument("--config-fragment", dest="config_fragment", help=f"fragment path (default: {DEFAULT_FRAG})")
-        psc.add_argument("--key-dir", dest="key_dir", help="key directory (default: $XDG_RUNTIME_DIR/corvus when set)")
+
+        plist = ssub.add_parser("list", help="list hosts you can ssh to (no secrets fetched)")
+        _ssh_discover(plist)
+        _ssh_paths(plist)
+        _add_no_trunc(plist)
+        _add_output(plist)
+        plist.set_defaults(func=cmd_ssh)
+
+        pstat = ssub.add_parser("status", help="show agent, Include, and loaded keys")
+        _ssh_discover(pstat)
+        _ssh_paths(pstat)
+        _add_no_trunc(pstat)
+        _add_output(pstat)
+        pstat.set_defaults(func=cmd_ssh)
+
+        pun = ssub.add_parser("uninstall", help="remove Include from ~/.ssh/config")
+        _ssh_paths(pun)
+        pun.add_argument("--purge", action="store_true", help="also delete fragment, .pub files, and drop identities from ssh-agent")
+        _add_no_trunc(pun)
+        _add_output(pun)
+        pun.set_defaults(func=cmd_ssh)
+
+        psc = ssub.add_parser("config", help="(advanced) install/uninstall Include line")
+        psc.add_argument("config_action", nargs="?", choices=("install", "uninstall"), default="install")
+        _ssh_paths(psc)
+        psc.add_argument("--purge", action="store_true", help="uninstall: also delete fragment and .pub files")
         _add_no_trunc(psc)
         _add_output(psc)
         psc.set_defaults(func=cmd_ssh)
-        # ssh _ensure (lazy Match exec helper)
-        pens = ssub.add_parser("_ensure", help="ensure one host key is present (TTL cache)")
+
+        pens = ssub.add_parser("_ensure", help="internal Match exec helper (load one key into ssh-agent)")
         pens.add_argument("host", nargs="?", help="host name")
-        pens.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"secret prefix (default: {DEFAULT_PREFIX!r})")
-        pens.add_argument("--project", help="target project")
-        pens.add_argument("--key-dir", dest="key_dir", help="key directory")
-        pens.add_argument("--ttl", type=int, default=None, help=f"cache TTL seconds (default: {DEFAULT_TTL} or $SS_SSH_TTL)")
+        _ssh_discover(pens)
+        pens.add_argument("--key-dir", dest="key_dir", help="directory for .pub files")
+        pens.add_argument("--ttl", type=int, default=None, help=f"ssh-add lifetime seconds (default: {DEFAULT_TTL} or $SS_SSH_TTL)")
         pens.add_argument("--force", action="store_true", help="always refresh")
         _add_no_trunc(pens)
         _add_output(pens)
         pens.set_defaults(func=cmd_ssh)
+
+        pssh_help = ssub.add_parser("help", help="short how-to")
+        _add_no_trunc(pssh_help)
+        pssh_help.set_defaults(func=cmd_ssh)
+
         pssh.set_defaults(func=cmd_ssh)
     except Exception:  # pragma: no cover - ssh optional if module missing
         pass

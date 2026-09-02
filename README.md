@@ -21,7 +21,7 @@ printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
 ## Features
 
 - Secrets: list metadata, get one secret, apply, delete, request reveal, check history, use folders, and export. Bulk listing never returns values.
-- SSH hosts: out-of-the-box `kind=ssh` (including `corvus-agent` `hosts/<host>/users/<acct>`) → `~/.config/corvus/keys` (0700/0600, atomic) + `~/.ssh/config.d/corvus` Include for native `ssh <host>` (`ssh web01` sets `User <acct>`, `Host <host>` / `Host <host>-<acct>` aliases, `HostName` when needed, `IdentityFile`/`IdentitiesOnly yes`).
+- SSH hosts: `corvus ssh setup` then native `ssh <host>`. Private keys load into `ssh-agent` on first connect (`ssh-add -t TTL`); only `*.pub` is written locally.
 - Access control: per-secret modes, approval requirements, bindings (`grant`/`unbind`), and project settings.
 - Org: teams, projects, members, groups, scoped machine tokens, and trash.
 - Admin: users, audit by source (`project`, `org`, `secret`, `access`), and access requests.
@@ -36,6 +36,7 @@ printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
 - Python >= 3.9
 - Linux (RHEL 9+ tested), macOS, or any POSIX with Python 3
 - No third-party runtime deps
+- `corvus ssh`: OpenSSH client + `ssh-agent` (`openssh-clients` on Fedora / RHEL)
 
 ---
 
@@ -226,47 +227,105 @@ corvus delete secret API_KEY   # soft-delete to trash
 
 ### SSH hosts (native `ssh <host>`)
 
-Fetches `kind=ssh` private keys out of the box, including the default `corvus-agent` layout `hosts/<hostname>/users/<account>` (`key_prefix = "hosts/"`). One sync writes keys to `~/.config/corvus/keys` (0700 dir, 0600 files, atomic `mkstemp+rename`) and an Include fragment to `~/.ssh/config.d/corvus` with native `ssh <host>` aliases (no wrapper needed for `scp`/`rsync`/`ansible`).
+Discovers `kind=ssh` private keys, including the default `corvus-agent` layout `hosts/<hostname>/users/<account>`. One command wires your SSH config; after that, use normal `ssh` / `scp` / `rsync` / `ansible`. Private keys are **not** left on disk: first `ssh <host>` loads that key into ssh-agent (`ssh-add -t`, default 300s / `$SS_SSH_TTL`) and writes only the `.pub`.
 
-* `hosts/web01/users/deploy` (agent): `ssh web01` (or `ssh web01-deploy`) connects to `web01` as `User deploy` with its own key file `~/.config/corvus/keys/web01-deploy`. Multiple accounts on one host keep both aliases (`Host web01 web01-deploy` + `User deploy` + `HostName web01` for the suffixed alias). First account per host keeps bare hostname alias.
-* Any other `kind=ssh` secrets (e.g. legacy `ssh/web01` or `hosts/web01/users/root` with custom prefix): alias + file derived from suffix/basename; `User` only when the agent pattern applies.
-* `~/.config/corvus/ssh_hosts` (`host=secret_key` or `host secret_key`) still overrides the derived mapping.
+Start `ssh-agent` first ([Fedora / RHEL](#ssh-agent-on-fedora--rhel)), then:
 
 ```bash
-# Zero-config: agent already wrote hosts/<host>/users/<account> (kind=ssh, value=generated private key)
-# On your workstation (same Corvus project):
-corvus ssh config install   # once, idempotent — prepends Include ~/.ssh/config.d/corvus to ~/.ssh/config
-corvus ssh sync --dry-run   # no values fetched: lists HOST, SECRET_KEY, KEY_PATH (+ USER/HOSTNAME when agent layout)
-corvus ssh sync             # fetch values → keys + fragment
-ssh web01                   # agent account deploy → User deploy, Host web01 + web01-deploy, HostName web01, IdentityFile web01-deploy
-ssh web01-deploy            # explicit account alias
-ssh svc_backup@web01        # override User still works (CLI User is default only)
-scp report.tgz web01:/tmp/  # rsync/ansible work unchanged
-# If multiple accounts share a host, second gets only web01-root etc.:
-#   Host web01-root  HostName web01 / User root / IdentityFile web01-root
-
-# Custom prefix / kind-only discovery (also works for manual keys like ssh/web01)
-corvus apply secret ssh/web01 --kind ssh --from-file ~/.ssh/web01.key --note "manual"
-corvus ssh sync --prefix ssh/          # if you actually store ssh/web01
-corvus ssh sync --prefix ""            # empty prefix: kind=ssh only, host = last segment
-SS_SSH_USE_RUNTIME=1 corvus ssh sync   # tmpfs keys at $XDG_RUNTIME_DIR/corvus
-corvus ssh sync --clean -o json        # remove stale files, json {ok, failed, key_dir, fragment}
-
-# Host alias map (override derived name, e.g. ssh/prod/bastion-key → bastion)
-echo "myhost=ssh/web01" >> ~/.config/corvus/ssh_hosts
-echo "bastion=ssh/prod/bastion-key" >> ~/.config/corvus/ssh_hosts
-corvus ssh sync   # myhost -> ssh/web01
-
-# Lazy fetch for Match exec (TTL 3600s file cache)
-corvus ssh _ensure web01                        # no-op if age < 3600s
-corvus ssh _ensure web01-deploy --ttl 0 --force # always refresh; also resolves agent aliases/file names
-corvus ssh _ensure web01 --prefix hosts/        # explicit prefix variant
-
-# Uninstall
-corvus ssh config uninstall   # removes Include line, keeps fragment
+corvus ssh setup             # once: Include + host list
+ssh web01                    # first connect fetches that key into ssh-agent
+corvus ssh list              # what can I ssh to? (no secrets fetched)
+corvus ssh status            # agent / Include / loaded keys
 ```
 
-Discovery: default `--prefix hosts/`; when empty → `kind=ssh` only; otherwise prefix matches plus all `kind=ssh` (so agent + manual coexist). Agent key `*/users/<acct>` → host/alias mapping above; others → alias = suffix after prefix else last segment. `--dry-run` never fetches values. Cache TTL via `SS_SSH_TTL` / `--ttl 0` to always refresh; use `Match exec "corvus ssh _ensure %h"` for on-demand fetch (works for both `web01` and `web01-deploy`).
+* `hosts/web01/users/deploy` → `ssh web01` (or `ssh web01-deploy`) as `User deploy`, `IdentitiesOnly yes`.
+* Multiple accounts on one host: first keeps the bare hostname alias; others are `web01-root` etc.
+* Override aliases in `~/.config/corvus/ssh_hosts` (`host=secret_key`).
+* Prefer `ProxyJump` over `ForwardAgent` — identities live in the agent.
+
+```bash
+corvus ssh sync                         # refresh host list (also installs Include if missing)
+corvus ssh sync --eager                 # prefetch all keys into ssh-agent
+corvus ssh sync --prefix ssh/           # custom secret prefix
+corvus ssh sync --prefix ""             # kind=ssh only
+corvus ssh uninstall                    # remove Include, keep fragment
+corvus ssh uninstall --purge            # also delete .pub files and drop agent identities
+```
+
+`corvus ssh setup` is install + sync. `corvus ssh config install` still works. After upgrading from file-backed keys, run `corvus ssh setup` (or `sync`) so the fragment points at `.pub` files.
+
+#### ssh-agent on Fedora / RHEL
+
+`corvus ssh` talks to the agent at `$SSH_AUTH_SOCK`. Without it, `setup`/`sync` warn and `ssh <host>` cannot load keys.
+
+**1. Install the OpenSSH client** (`ssh`, `ssh-add`, `ssh-agent`, and on Fedora the user systemd units):
+
+```bash
+sudo dnf install -y openssh-clients
+```
+
+**2. See if an agent is already running** (GNOME Workstation often starts GNOME Keyring):
+
+```bash
+echo "$SSH_AUTH_SOCK"
+ssh-add -l
+```
+
+| `ssh-add -l` | Meaning |
+|---|---|
+| lists keys | Agent is up |
+| `The agent has no identities.` (exit 1) | Agent is up and empty — fine for Corvus |
+| `Could not open a connection…` (exit 2) | No agent — start one below |
+
+Prefer the OpenSSH agent over GNOME Keyring so `ssh-add -t` (Corvus TTL) is honoured.
+
+**3. Fedora, and RHEL with current `openssh-clients` — systemd user socket**
+
+These distros ship `/usr/lib/systemd/user/ssh-agent.socket`, which listens on `$XDG_RUNTIME_DIR/ssh-agent.socket`. Enable it for your user:
+
+```bash
+systemctl --user enable --now ssh-agent.socket
+systemctl --user status ssh-agent.socket
+```
+
+The unit does **not** export `SSH_AUTH_SOCK` into interactive shells (KDE Plasma does via `/etc/xdg/plasma-workspace/env/ssh-agent.sh`). Point your session at the socket:
+
+```bash
+# this shell
+export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
+
+# bash logins
+grep -q SSH_AUTH_SOCK ~/.bashrc 2>/dev/null || \
+  echo 'export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"' >> ~/.bashrc
+
+# systemd user services / graphical sessions (log out and back in)
+mkdir -p ~/.config/environment.d
+echo 'SSH_AUTH_SOCK=${XDG_RUNTIME_DIR}/ssh-agent.socket' \
+  > ~/.config/environment.d/ssh-agent.conf
+```
+
+If `systemctl --user cat ssh-agent.socket` fails, the user unit is not packaged (typical of older RHEL 9). Use the fallback.
+
+**4. Fallback — current shell, or older RHEL**
+
+```bash
+eval "$(ssh-agent -s)"
+```
+
+To start it on every interactive login (RHEL 8/9 documented method):
+
+```bash
+echo 'eval "$(ssh-agent -s)"' >> ~/.bashrc
+```
+
+**5. Check, then use Corvus**
+
+```bash
+ssh-add -l            # "The agent has no identities" is OK
+corvus ssh status     # ssh-agent should say running
+corvus ssh setup
+ssh web01
+```
 
 ### Folders
 
@@ -508,7 +567,7 @@ corvus_cli/
     secrets.py      # apply (secret)
     management.py   # get / create / delete / restore / transfer
     access.py       # reveal / approve / deny / grant / unbind / export / settings
-    ssh.py          # ssh sync / config / _ensure (Include fragment + key dir, 0700/0600)
+    ssh.py          # ssh setup / list / status / sync / uninstall (ssh-agent + .pub)
 corvus.1            # man page
 tests/              # pytest suite (no network)
 rpm/corvus-cli.spec
@@ -537,7 +596,7 @@ Every public function has a docstring with Description, Inputs, Outputs, and Exa
 | Export | `export -o env --yes` |
 | Groups | `get groups --team T` / `create group NAME --team T` |
 | Trash | `get trash` / `restore trash ID` |
-| SSH hosts | `ssh config install` / `ssh sync [--dry-run] [--clean]` / `ssh _ensure HOST` |
+| SSH hosts | `ssh setup` / `ssh list` / `ssh status` / `ssh uninstall [--purge]` (needs ssh-agent; Fedora/RHEL: `openssh-clients`) |
 | Admin | `get users` / `get audit --source access` |
 | Completion | `completion bash\|zsh\|fish` |
 

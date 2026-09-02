@@ -840,6 +840,8 @@ def test_lazy_ssh_fragment_match_host_is_comma_separated(tmp_path):
     text = frag.read_text()
     assert f"Match host {host},{alias_acct} exec" in text
     assert f"Match host {host} {alias_acct}" not in text
+    assert f"IdentityFile {key_dir / (alias_acct + '.pub')}" in text
+    assert "IdentitiesOnly yes" in text
 
     ssh = shutil.which("ssh")
     if not ssh:
@@ -850,3 +852,314 @@ def test_lazy_ssh_fragment_match_host_is_comma_separated(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "Unsupported Match attribute" not in r.stderr
     assert "Bad Match condition" not in r.stderr
+
+
+def _ed25519_pair(dir_path: Path) -> tuple[str, str]:
+    import shutil
+    import subprocess
+
+    if not shutil.which("ssh-keygen"):
+        pytest.skip("ssh-keygen not available")
+    dir_path.mkdir(parents=True, exist_ok=True)
+    priv = dir_path / "id_ed25519"
+    subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(priv), "-q"], check=True)
+    return priv.read_text(), (dir_path / "id_ed25519.pub").read_text()
+
+
+def _start_ssh_agent(monkeypatch):
+    import shutil
+    import subprocess
+
+    if not shutil.which("ssh-agent") or not shutil.which("ssh-add"):
+        pytest.skip("ssh-agent not available")
+    out = subprocess.check_output(["ssh-agent", "-s"], text=True)
+    sock = pid = None
+    for line in out.splitlines():
+        if line.startswith("SSH_AUTH_SOCK=") and sock is None:
+            sock = line.split("=", 1)[1].split(";", 1)[0]
+        if line.startswith("SSH_AGENT_PID=") and pid is None:
+            pid = line.split("=", 1)[1].split(";", 1)[0]
+    assert sock and pid
+    monkeypatch.setenv("SSH_AUTH_SOCK", sock)
+    monkeypatch.setenv("SSH_AGENT_PID", pid)
+    return int(pid)
+
+
+def _stop_ssh_agent(pid: int) -> None:
+    import os
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def test_ssh_ensure_requires_agent(ss, tmp_path, monkeypatch):
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    with pytest.raises(SystemExit) as e:
+        ss.main(["ssh", "_ensure", "web01", "--key-dir", str(tmp_path / "keys")])
+    assert e.value.code not in (0, None)
+    assert "ssh-agent" in str(e.value)
+
+
+def test_ssh_ensure_loads_into_agent_and_writes_only_pub(ss, tmp_path, monkeypatch):
+    priv, pub = _ed25519_pair(tmp_path / "gen")
+    pid = _start_ssh_agent(monkeypatch)
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    leftover = key_dir / "stale-private"
+    leftover.write_text("BEGIN PRIVATE KEY\n")
+    secret_key = "hosts/web01/users/deploy/authorized_keys"
+    items = [{"key": secret_key, "kind": "ssh"}]
+    calls: list[str] = []
+
+    def fake_api(method, path, *, body=None, query=None, project=None, token=None):
+        calls.append(path)
+        if path == "/secrets":
+            return {"items": items}
+        if path.endswith(secret_key) or secret_key in path:
+            return {"value": priv}
+        raise AssertionError(path)
+
+    write_config(ss, token="pat_test")
+    try:
+        with mock.patch.object(ss, "_proj_api", side_effect=fake_api):
+            with pytest.raises(SystemExit) as e:
+                ss.main(["ssh", "_ensure", "web01", "--key-dir", str(key_dir)])
+            assert e.value.code == 0
+            with pytest.raises(SystemExit) as e2:
+                ss.main(["ssh", "_ensure", "web01", "--key-dir", str(key_dir)])
+            assert e2.value.code == 0
+    finally:
+        _stop_ssh_agent(pid)
+
+    assert sum(1 for p in calls if secret_key in p and p != "/secrets") == 1
+    pub_path = key_dir / "web01-deploy.pub"
+    assert pub_path.is_file()
+    assert pub_path.read_text().split()[:2] == pub.split()[:2]
+    assert not (key_dir / "web01-deploy").exists()
+    assert not leftover.exists()
+
+
+def test_ssh_ensure_force_refetches(ss, tmp_path, monkeypatch):
+    priv, _pub = _ed25519_pair(tmp_path / "gen")
+    pid = _start_ssh_agent(monkeypatch)
+    key_dir = tmp_path / "keys"
+    secret_key = "hosts/web01/users/deploy/authorized_keys"
+    items = [{"key": secret_key, "kind": "ssh"}]
+    fetches: list[str] = []
+
+    def fake_api(method, path, *, body=None, query=None, project=None, token=None):
+        if path == "/secrets":
+            return {"items": items}
+        if secret_key in path:
+            fetches.append(path)
+            return {"value": priv}
+        raise AssertionError(path)
+
+    write_config(ss, token="pat_test")
+    try:
+        with mock.patch.object(ss, "_proj_api", side_effect=fake_api):
+            for args in (
+                ["ssh", "_ensure", "web01", "--key-dir", str(key_dir)],
+                ["ssh", "_ensure", "web01", "--key-dir", str(key_dir), "--force"],
+            ):
+                with pytest.raises(SystemExit) as e:
+                    ss.main(args)
+                assert e.value.code == 0
+    finally:
+        _stop_ssh_agent(pid)
+    assert len(fetches) == 2
+
+
+def test_ssh_config_uninstall_purge(ss, tmp_path):
+    ssh_config = tmp_path / "config"
+    frag = tmp_path / "config.d" / "corvus"
+    frag.parent.mkdir()
+    frag.write_text("# corvus ssh\n")
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    (key_dir / "web01-deploy.pub").write_text("ssh-ed25519 AAAA fake\n")
+    (key_dir / "leftover").write_text("PRIVATE\n")
+    ssh_config.write_text("Include ~/.ssh/config.d/corvus\nHost other\n")
+    ss.main(
+        [
+            "ssh",
+            "config",
+            "uninstall",
+            "--ssh-config",
+            str(ssh_config),
+            "--config-fragment",
+            str(frag),
+            "--key-dir",
+            str(key_dir),
+            "--purge",
+        ]
+    )
+    assert "Include ~/.ssh/config.d/corvus" not in ssh_config.read_text()
+    assert not frag.exists()
+    assert not key_dir.exists()
+
+
+def test_ssh_sync_lazy_does_not_fetch_values(ss, tmp_path, capsys):
+    write_config(ss, token="pat_test")
+    payload = {"items": [{"key": "hosts/web01/users/deploy/authorized_keys", "kind": "ssh"}]}
+    frag = tmp_path / "corvus"
+    key_dir = tmp_path / "keys"
+    with mock.patch.object(ss, "_proj_api", return_value=payload) as api:
+        ss.main(
+            [
+                "ssh",
+                "sync",
+                "--key-dir",
+                str(key_dir),
+                "--config-fragment",
+                str(frag),
+            ]
+        )
+    paths = [c[1] for c in api.call_args_list]
+    assert all("/secrets/" not in p or p.endswith("/secrets") for p in paths)
+    text = frag.read_text()
+    assert "web01-deploy.pub" in text
+    assert "IdentitiesOnly yes" in text
+    assert "Match host" in text
+
+
+def test_ssh_no_args_prints_howto(ss, capsys):
+    with pytest.raises(SystemExit) as e:
+        ss.main(["ssh"])
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "corvus ssh setup" in out
+    assert "corvus ssh list" in out
+    assert "corvus ssh status" in out
+
+
+def test_ssh_list_does_not_fetch_values(ss, tmp_path, capsys):
+    write_config(ss, token="pat_test")
+    payload = {"items": [{"key": "hosts/web01/users/deploy/authorized_keys", "kind": "ssh"}]}
+    with mock.patch.object(ss, "_proj_api", return_value=payload) as api:
+        ss.main(["ssh", "list", "--key-dir", str(tmp_path / "keys")])
+    paths = [c[1] for c in api.call_args_list]
+    assert all("/secrets/" not in p or p.endswith("/secrets") for p in paths)
+    combined = capsys.readouterr()
+    assert "web01" in combined.out
+    assert "ssh web01" in combined.out
+
+
+def test_ssh_setup_wires_include_and_fragment(ss, tmp_path, capsys):
+    write_config(ss, token="pat_test")
+    ssh_config = tmp_path / "ssh_config"
+    frag = tmp_path / "config.d" / "corvus"
+    key_dir = tmp_path / "keys"
+    payload = {"items": [{"key": "hosts/web01/users/deploy/authorized_keys", "kind": "ssh"}]}
+    with mock.patch.object(ss, "_proj_api", return_value=payload):
+        ss.main(
+            [
+                "ssh",
+                "setup",
+                "--ssh-config",
+                str(ssh_config),
+                "--config-fragment",
+                str(frag),
+                "--key-dir",
+                str(key_dir),
+            ]
+        )
+    assert "Include" in ssh_config.read_text()
+    assert frag.is_file()
+    assert "Match host" in frag.read_text()
+    out = capsys.readouterr()
+    assert "web01" in out.out
+    assert "ssh web01" in out.err
+
+
+def test_ssh_sync_wires_include_when_ssh_config_given(ss, tmp_path):
+    write_config(ss, token="pat_test")
+    ssh_config = tmp_path / "ssh_config"
+    frag = tmp_path / "config.d" / "corvus"
+    payload = {"items": [{"key": "hosts/web01/users/deploy/authorized_keys", "kind": "ssh"}]}
+    with mock.patch.object(ss, "_proj_api", return_value=payload):
+        ss.main(
+            [
+                "ssh",
+                "sync",
+                "--ssh-config",
+                str(ssh_config),
+                "--config-fragment",
+                str(frag),
+                "--key-dir",
+                str(tmp_path / "keys"),
+            ]
+        )
+    assert "Include" in ssh_config.read_text()
+
+
+def test_ssh_status_without_login(ss, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    ssh_config = tmp_path / "ssh_config"
+    frag = tmp_path / "missing-frag"
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    ss.main(
+        [
+            "ssh",
+            "status",
+            "--ssh-config",
+            str(ssh_config),
+            "--config-fragment",
+            str(frag),
+            "--key-dir",
+            str(key_dir),
+        ]
+    )
+    out = capsys.readouterr()
+    assert "not running" in out.out
+    assert "corvus ssh setup" in out.err
+
+
+def test_ssh_uninstall_top_level_purge(ss, tmp_path):
+    ssh_config = tmp_path / "config"
+    frag = tmp_path / "config.d" / "corvus"
+    frag.parent.mkdir()
+    frag.write_text("# corvus ssh\n")
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    (key_dir / "web01-deploy.pub").write_text("ssh-ed25519 AAAA fake\n")
+    ssh_config.write_text("Include ~/.ssh/config.d/corvus\nHost other\n")
+    ss.main(
+        [
+            "ssh",
+            "uninstall",
+            "--purge",
+            "--ssh-config",
+            str(ssh_config),
+            "--config-fragment",
+            str(frag),
+            "--key-dir",
+            str(key_dir),
+        ]
+    )
+    assert "Include ~/.ssh/config.d/corvus" not in ssh_config.read_text()
+    assert not frag.exists()
+    assert not key_dir.exists()
+
+
+def test_ssh_sync_warns_without_agent(ss, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    write_config(ss, token="pat_test")
+    payload = {"items": [{"key": "hosts/web01/users/deploy/authorized_keys", "kind": "ssh"}]}
+    with mock.patch.object(ss, "_proj_api", return_value=payload):
+        ss.main(
+            [
+                "ssh",
+                "sync",
+                "--key-dir",
+                str(tmp_path / "keys"),
+                "--config-fragment",
+                str(tmp_path / "corvus"),
+            ]
+        )
+    err = capsys.readouterr().err
+    assert "ssh-agent is not running" in err
