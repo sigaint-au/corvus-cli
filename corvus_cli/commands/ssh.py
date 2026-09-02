@@ -42,8 +42,8 @@ from corvus_cli.output import emit, print_table
 # ponytail: matches corvus-agent default key_prefix="hosts/"
 DEFAULT_PREFIX = "hosts/"
 DEFAULT_FRAG = Path.home() / ".ssh" / "config.d" / "corvus"
-# ponytail: TTL 3600s file cache; lower if keys rotate fast
-DEFAULT_TTL = 3600
+# ponytail: TTL 300s for lazy JIT keys (was 3600); short enough to pick up rotations
+DEFAULT_TTL = 300
 INCLUDE_LINE = "Include ~/.ssh/config.d/corvus"
 
 
@@ -58,15 +58,15 @@ def _ssh_hosts_map() -> Path:
 
 
 def _default_key_dir() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.environ.get("SS_SSH_USE_RUNTIME") != "0":
+        return Path(runtime) / "corvus"
     return _config_dir() / "keys"
 
 
 def _resolve_key_dir(custom: str | None) -> Path:
     if custom:
         return Path(custom).expanduser()
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime and os.environ.get("SS_SSH_USE_RUNTIME") == "1":
-        return Path(runtime) / "corvus"
     return _default_key_dir()
 
 
@@ -362,12 +362,28 @@ def _fetch_value(key: str, project: str | None) -> str:
     return str(data["value"])
 
 
-def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str) -> None:
-    lines: list[str] = ["# corvus ssh - generated, do not edit", f"# prefix={prefix!r} key_dir={key_dir}", ""]
+def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str, lazy: bool = False) -> None:
+    lines: list[str] = ["# corvus ssh - generated, do not edit", f"# prefix={prefix!r} key_dir={key_dir} lazy={lazy}", ""]
     if not entries:
         lines.append("# (no ssh hosts found)")
     for e in sorted(entries, key=lambda x: x["alias"]):
         aliases = e.get("aliases") or [e["alias"]]
+        if lazy:
+            # JIT: ssh triggers corvus ssh _ensure on first use; keys live in tmpfs until TTL
+            host_line = " ".join(aliases)
+            ensure = f'corvus ssh _ensure {e["alias"]} --key-dir {key_dir} --ttl {DEFAULT_TTL}'
+            # quote key_dir if it contains spaces
+            lines.append(f'Match host {host_line} exec "{ensure}"')
+            hostname = e.get("hostname")
+            if hostname and any(a != hostname for a in aliases):
+                lines.append(f"  HostName {hostname}")
+            user = e.get("user")
+            if user:
+                lines.append(f"  User {user}")
+            lines.append(f"  IdentityFile {key_dir / e['file']}")
+            lines.append("  IdentitiesOnly yes")
+            lines.append("")
+            continue
         host_line = " ".join(aliases)
         lines.append(f"Host {host_line}")
         # For agent entries, HostName disambiguates file-variant aliases
@@ -422,10 +438,37 @@ def _cmd_sync(args) -> None:
     do_clean = bool(getattr(args, "clean", False))
     do_fragment = not bool(getattr(args, "no_fragment", False))
     out_mode = getattr(args, "output", None) or "table"
+    eager = bool(getattr(args, "eager", False))
 
     candidates = _list_candidates(project, prefix)
     host_map = _load_host_map()
     entries = _derive_entries(candidates, prefix, host_map)
+
+    # optional: rich feedback helpers (import lazily so --help / tests don't require dep)
+    def _rich_panel(msg: str, title: str = "") -> None:
+        try:
+            from rich.console import Console  # type: ignore
+            from rich.panel import Panel  # type: ignore
+
+            Console(stderr=True).print(Panel(msg, title=title, border_style="blue"))
+        except Exception:
+            print(msg, file=sys.stderr)
+
+    def _rich_table(headers: list[str], rows: list[list[str]], title: str = "") -> None:
+        try:
+            from rich.console import Console  # type: ignore
+            from rich.table import Table  # type: ignore
+
+            t = Table(title=title, show_lines=False)
+            for h in headers:
+                t.add_column(h, overflow="fold")
+            for r in rows:
+                t.add_row(*[str(c) for c in r])
+            Console().print(t)
+            return
+        except Exception:
+            pass
+        print_table(headers, rows)
 
     if out_mode == "json" and dry_run:
         emit({"prefix": prefix, "key_dir": str(key_dir), "fragment": str(frag), "hosts": [e["alias"] for e in entries], "keys": {e["alias"]: e["key"] for e in entries}, "entries": entries}, "json")
@@ -452,10 +495,94 @@ def _cmd_sync(args) -> None:
         elif has_host and not has_user:
             headers.append("HOSTNAME")
             rows = [r[:3] + [r[4]] for r in rows]
-        print_table(headers, rows)
+        # rich in dry-run too
+        try:
+            from rich.table import Table  # type: ignore
+            from rich.console import Console  # type: ignore
+
+            t = Table(title=f"dry-run · {len(entries)} host(s) · prefix={prefix!r}", show_lines=False)
+            for h in headers:
+                t.add_column(h, overflow="fold")
+            for r in rows:
+                t.add_row(*[str(c) for c in r])
+            Console().print(t)
+        except Exception:
+            print_table(headers, rows)
+        if not eager:
+            print(f"lazy: keys will be fetched on first `ssh <host>` to {key_dir} (TTL {DEFAULT_TTL}s); use --eager to write them now", file=sys.stderr)
+        return
+
+    # lazy (default): only write fragment; keys materialized on first ssh via _ensure
+    if not eager:
+        _ensure_dir(key_dir, 0o700)
+        if do_fragment:
+            _write_fragment(entries, key_dir, frag, prefix, lazy=True)
+        # prune stale entries from fragment perspective; don't fetch values
+        if do_clean and key_dir.is_dir():
+            expected = {e["file"] for e in entries}
+            removed = 0
+            for p in key_dir.iterdir():
+                if p.is_file() and p.name not in expected and not p.name.startswith("."):
+                    try:
+                        p.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+            if removed:
+                print(f"cleaned {removed} stale key(s) from {key_dir}", file=sys.stderr)
+        if out_mode == "json":
+            emit({"mode": "lazy", "hosts": [e["alias"] for e in entries], "key_dir": str(key_dir), "fragment": str(frag) if do_fragment else None, "ttl": DEFAULT_TTL, "prefix": prefix}, "json")
+            return
+        if entries:
+            _rich_table(["HOST", "SECRET_KEY", "KEY_PATH"], [[e["alias"], e["key"], str(key_dir / e["file"])] for e in sorted(entries, key=lambda x: x["alias"])], title=f"lazy · {len(entries)} host(s) · keys on first ssh (TTL {DEFAULT_TTL}s)")
+            _rich_panel(f"fragment: {frag}\nkey_dir: {key_dir} (tmpfs when $XDG_RUNTIME_DIR set)\nnext: ssh <host>  — first connect fetches the key; use `corvus ssh sync --eager` for offline prefetch", title="ready")
+        else:
+            print(f"no ssh hosts (prefix={prefix!r})", file=sys.stderr)
+            if do_fragment:
+                print(f"fragment {frag}", file=sys.stderr)
         return
 
     _ensure_dir(key_dir, 0o700)
+    ok_entries: list[dict] = []
+    failed: list[tuple[str, str]] = []
+    # rich progress for eager bulk fetch
+    try:
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn  # type: ignore
+        from rich.console import Console  # type: ignore
+
+        use_progress = sys.stderr.isatty() and len(entries) > 1 and out_mode != "json"
+    except Exception:
+        use_progress = False
+
+    def _fetch_all_eager():
+        nonlocal ok_entries, failed
+        if use_progress:
+            console = Console(stderr=True)
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(), console=console) as prog:
+                task = prog.add_task(f"fetching {len(entries)} key(s)", total=len(entries))
+                for e in sorted(entries, key=lambda x: x["alias"]):
+                    prog.update(task, description=f"fetch {e['alias']}")
+                    try:
+                        val = _fetch_value(e["key"], project)
+                        _write_key_atomic(key_dir / e["file"], val)
+                        ok_entries.append(e)
+                    except SystemExit as exc:
+                        failed.append((e["alias"], str(exc).splitlines()[0][:120]))
+                    prog.advance(task)
+        else:
+            for e in sorted(entries, key=lambda x: x["alias"]):
+                key = e["key"]
+                try:
+                    val = _fetch_value(key, project)
+                    _write_key_atomic(key_dir / e["file"], val)
+                    ok_entries.append(e)
+                except SystemExit as exc:
+                    failed.append((e["alias"], str(exc).splitlines()[0][:120]))
+
+    _fetch_all_eager()
+
+    if do_fragment:
+        _write_fragment(ok_entries, key_dir, frag, prefix)
     ok_entries: list[dict] = []
     failed: list[tuple[str, str]] = []
     for e in sorted(entries, key=lambda x: x["alias"]):

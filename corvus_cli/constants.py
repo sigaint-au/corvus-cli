@@ -140,8 +140,8 @@ Commands
 
   SSH hosts (native ssh <host>)
     ssh config [install|uninstall]      add/remove Include ~/.ssh/config.d/corvus
-    ssh sync [--prefix hosts/] [--clean] [--dry-run]  fetch kind=ssh/hosts/* → keys + fragment (agent: hosts/<host>/users/<acct> → ssh <host>)
-    ssh _ensure HOST [--ttl 3600]      lazy fetch for Match exec (file-cache TTL)
+    ssh sync [--prefix hosts/] [--eager] [--clean] [--dry-run]  lazy by default → fragment with Match exec (fetch on first ssh); --eager prefetches all keys (agent: hosts/<host>/users/<acct> → ssh <host>)
+    ssh _ensure HOST [--ttl 300]       lazy fetch for Match exec (file-cache TTL)
 
   Admin (global)
     get users [ -l QUERY ] | get audit [ --source project|org|secret|access ]
