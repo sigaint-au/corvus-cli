@@ -28,6 +28,7 @@ _UNDERLYING_MODS = [
     "corvus_cli.commands.management",
     "corvus_cli.commands.secrets",
     "corvus_cli.commands.access",
+    "corvus_cli.commands.ssh",
 ]
 
 

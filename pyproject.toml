@@ -41,6 +41,9 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["corvus_cli"]
 
+[tool.ruff.lint.per-file-ignores]
+"corvus" = ["I001", "F401"]
+
 [tool.ruff.format]
 quote-style = "double"
 

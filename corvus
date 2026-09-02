@@ -53,6 +53,12 @@ from corvus_cli.output import (
     print_table,
     trunc,
 )
+from corvus_cli.commands.ssh import (  # noqa: F401  # shim re-export for tests patching ss.*
+    DEFAULT_FRAG as _DEFAULT_FRAG,
+    DEFAULT_PREFIX as _DEFAULT_PREFIX,
+    DEFAULT_TTL as _DEFAULT_TTL,
+    INCLUDE_LINE as _INCLUDE_LINE,
+)
 
 # Legacy aliases expected by older code/tests
 _print_json = print_json
