@@ -619,8 +619,24 @@ def _fetch_value(key: str, project: str | None) -> str:
     return str(data["value"])
 
 
+def _corvus_executable() -> str:
+    """Absolute path of *this* CLI so Match exec cannot pick a different install from PATH."""
+    argv0 = sys.argv[0]
+    try:
+        p = Path(argv0).expanduser()
+        if p.name in ("corvus", "corvus.exe"):
+            if p.is_file():
+                return str(p.resolve())
+            w = shutil.which(argv0) if not p.is_absolute() else None
+            if w:
+                return str(Path(w).resolve())
+    except OSError:
+        pass
+    return shutil.which("corvus") or "corvus"
+
+
 def _ensure_exec_cmd(alias: str, key_dir: Path, prefix: str) -> str:
-    parts = ["corvus", "ssh", "_ensure", alias, "--key-dir", str(key_dir)]
+    parts = [_corvus_executable(), "ssh", "_ensure", alias, "--key-dir", str(key_dir)]
     if prefix != DEFAULT_PREFIX:
         parts += ["--prefix", prefix]
     return " ".join(shlex.quote(p) for p in parts)
@@ -635,11 +651,13 @@ def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str,
         ident = _cfg_path(_identity_path(key_dir, e["file"]))
         if lazy:
             # JIT: ssh triggers corvus ssh _ensure on first use; private key lives in ssh-agent until TTL
-            # Match host takes a comma-separated pattern list (Host uses spaces).
-            # A space after the first alias is parsed as the next Match attribute.
+            # originalhost: Match host re-parses after HostName, so ssh host-acct also matched the
+            # bare-hostname block and stacked that account's IdentityFile.
+            # Comma-separated pattern list (Host uses spaces). A space after the first alias is
+            # parsed as the next Match attribute.
             host_pat = ",".join(aliases)
             ensure = _ensure_exec_cmd(e["alias"], key_dir, prefix)
-            lines.append(f'Match host {host_pat} exec "{ensure}"')
+            lines.append(f'Match originalhost {host_pat} exec "{ensure}"')
             hostname = e.get("hostname")
             if hostname and any(a != hostname for a in aliases):
                 lines.append(f"  HostName {hostname}")
