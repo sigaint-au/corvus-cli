@@ -21,6 +21,7 @@ printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
 ## Features
 
 - Secrets: list metadata, get one secret, apply, delete, request reveal, check history, use folders, and export. Bulk listing never returns values.
+- SSH hosts: out-of-the-box `kind=ssh` (including `corvus-agent` `hosts/<host>/users/<acct>`) → `~/.config/corvus/keys` (0700/0600, atomic) + `~/.ssh/config.d/corvus` Include for native `ssh <host>` (`ssh web01` sets `User <acct>`, `Host <host>` / `Host <host>-<acct>` aliases, `HostName` when needed, `IdentityFile`/`IdentitiesOnly yes`).
 - Access control: per-secret modes, approval requirements, bindings (`grant`/`unbind`), and project settings.
 - Org: teams, projects, members, groups, scoped machine tokens, and trash.
 - Admin: users, audit by source (`project`, `org`, `secret`, `access`), and access requests.
@@ -222,6 +223,50 @@ Aliases: `create secret` and `set secret` both run `apply secret`. Success table
 ```bash
 corvus delete secret API_KEY   # soft-delete to trash
 ```
+
+### SSH hosts (native `ssh <host>`)
+
+Fetches `kind=ssh` private keys out of the box, including the default `corvus-agent` layout `hosts/<hostname>/users/<account>` (`key_prefix = "hosts/"`). One sync writes keys to `~/.config/corvus/keys` (0700 dir, 0600 files, atomic `mkstemp+rename`) and an Include fragment to `~/.ssh/config.d/corvus` with native `ssh <host>` aliases (no wrapper needed for `scp`/`rsync`/`ansible`).
+
+* `hosts/web01/users/deploy` (agent): `ssh web01` (or `ssh web01-deploy`) connects to `web01` as `User deploy` with its own key file `~/.config/corvus/keys/web01-deploy`. Multiple accounts on one host keep both aliases (`Host web01 web01-deploy` + `User deploy` + `HostName web01` for the suffixed alias). First account per host keeps bare hostname alias.
+* Any other `kind=ssh` secrets (e.g. legacy `ssh/web01` or `hosts/web01/users/root` with custom prefix): alias + file derived from suffix/basename; `User` only when the agent pattern applies.
+* `~/.config/corvus/ssh_hosts` (`host=secret_key` or `host secret_key`) still overrides the derived mapping.
+
+```bash
+# Zero-config: agent already wrote hosts/<host>/users/<account> (kind=ssh, value=generated private key)
+# On your workstation (same Corvus project):
+corvus ssh config install   # once, idempotent — prepends Include ~/.ssh/config.d/corvus to ~/.ssh/config
+corvus ssh sync --dry-run   # no values fetched: lists HOST, SECRET_KEY, KEY_PATH (+ USER/HOSTNAME when agent layout)
+corvus ssh sync             # fetch values → keys + fragment
+ssh web01                   # agent account deploy → User deploy, Host web01 + web01-deploy, HostName web01, IdentityFile web01-deploy
+ssh web01-deploy            # explicit account alias
+ssh svc_backup@web01        # override User still works (CLI User is default only)
+scp report.tgz web01:/tmp/  # rsync/ansible work unchanged
+# If multiple accounts share a host, second gets only web01-root etc.:
+#   Host web01-root  HostName web01 / User root / IdentityFile web01-root
+
+# Custom prefix / kind-only discovery (also works for manual keys like ssh/web01)
+corvus apply secret ssh/web01 --kind ssh --from-file ~/.ssh/web01.key --note "manual"
+corvus ssh sync --prefix ssh/          # if you actually store ssh/web01
+corvus ssh sync --prefix ""            # empty prefix: kind=ssh only, host = last segment
+SS_SSH_USE_RUNTIME=1 corvus ssh sync   # tmpfs keys at $XDG_RUNTIME_DIR/corvus
+corvus ssh sync --clean -o json        # remove stale files, json {ok, failed, key_dir, fragment}
+
+# Host alias map (override derived name, e.g. ssh/prod/bastion-key → bastion)
+echo "myhost=ssh/web01" >> ~/.config/corvus/ssh_hosts
+echo "bastion=ssh/prod/bastion-key" >> ~/.config/corvus/ssh_hosts
+corvus ssh sync   # myhost -> ssh/web01
+
+# Lazy fetch for Match exec (TTL 3600s file cache)
+corvus ssh _ensure web01                        # no-op if age < 3600s
+corvus ssh _ensure web01-deploy --ttl 0 --force # always refresh; also resolves agent aliases/file names
+corvus ssh _ensure web01 --prefix hosts/        # explicit prefix variant
+
+# Uninstall
+corvus ssh config uninstall   # removes Include line, keeps fragment
+```
+
+Discovery: default `--prefix hosts/`; when empty → `kind=ssh` only; otherwise prefix matches plus all `kind=ssh` (so agent + manual coexist). Agent key `*/users/<acct>` → host/alias mapping above; others → alias = suffix after prefix else last segment. `--dry-run` never fetches values. Cache TTL via `SS_SSH_TTL` / `--ttl 0` to always refresh; use `Match exec "corvus ssh _ensure %h"` for on-demand fetch (works for both `web01` and `web01-deploy`).
 
 ### Folders
 
@@ -463,6 +508,7 @@ corvus_cli/
     secrets.py      # apply (secret)
     management.py   # get / create / delete / restore / transfer
     access.py       # reveal / approve / deny / grant / unbind / export / settings
+    ssh.py          # ssh sync / config / _ensure (Include fragment + key dir, 0700/0600)
 corvus.1            # man page
 tests/              # pytest suite (no network)
 rpm/corvus-cli.spec
@@ -491,6 +537,7 @@ Every public function has a docstring with Description, Inputs, Outputs, and Exa
 | Export | `export -o env --yes` |
 | Groups | `get groups --team T` / `create group NAME --team T` |
 | Trash | `get trash` / `restore trash ID` |
+| SSH hosts | `ssh config install` / `ssh sync [--dry-run] [--clean]` / `ssh _ensure HOST` |
 | Admin | `get users` / `get audit --source access` |
 | Completion | `completion bash\|zsh\|fish` |
 

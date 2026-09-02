@@ -393,6 +393,48 @@ def build_parser() -> argparse.ArgumentParser:
     _add_no_trunc(pcomp)
     pcomp.set_defaults(func=_cmd_completion)
 
+    # ssh host integration (flow 4: Include fragment + key dir)
+    try:
+        from corvus_cli.commands.ssh import DEFAULT_FRAG, DEFAULT_PREFIX, DEFAULT_TTL, cmd_ssh  # noqa: F811
+
+        pssh = sub.add_parser("ssh", help="SSH host keys (sync/config/_ensure)")
+        ssub = pssh.add_subparsers(dest="ssh_cmd")
+        # ssh sync
+        psync = ssub.add_parser("sync", help="fetch ssh keys and write Include fragment")
+        psync.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"secret prefix (default: {DEFAULT_PREFIX!r}; empty for kind=ssh only)")
+        psync.add_argument("--project", help="target project (UUID or name for pat_…/sso_…)")
+        psync.add_argument("--key-dir", dest="key_dir", help="key directory (default: ~/.config/corvus/keys or $XDG_RUNTIME_DIR/corvus with SS_SSH_USE_RUNTIME=1)")
+        psync.add_argument("--config-fragment", dest="config_fragment", help=f"fragment path (default: {DEFAULT_FRAG})")
+        psync.add_argument("--dry-run", action="store_true", help="list hosts without fetching values")
+        psync.add_argument("--clean", action="store_true", help="remove stale keys not in current set")
+        psync.add_argument("--no-fragment", action="store_true", help="do not write fragment")
+        _add_no_trunc(psync)
+        _add_output(psync)
+        psync.set_defaults(func=cmd_ssh)
+        # ssh config
+        psc = ssub.add_parser("config", help="install/uninstall Include line in ~/.ssh/config")
+        psc.add_argument("config_action", nargs="?", choices=("install", "uninstall"), default="install", help="install or uninstall (default: install)")
+        psc.add_argument("--ssh-config", dest="ssh_config", help="ssh config path (default: ~/.ssh/config)")
+        psc.add_argument("--config-fragment", dest="config_fragment", help=f"fragment path (default: {DEFAULT_FRAG})")
+        psc.add_argument("--key-dir", dest="key_dir", help="key directory (default: ~/.config/corvus/keys)")
+        _add_no_trunc(psc)
+        _add_output(psc)
+        psc.set_defaults(func=cmd_ssh)
+        # ssh _ensure (lazy Match exec helper)
+        pens = ssub.add_parser("_ensure", help="ensure one host key is present (TTL cache)")
+        pens.add_argument("host", nargs="?", help="host name")
+        pens.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"secret prefix (default: {DEFAULT_PREFIX!r})")
+        pens.add_argument("--project", help="target project")
+        pens.add_argument("--key-dir", dest="key_dir", help="key directory")
+        pens.add_argument("--ttl", type=int, default=None, help=f"cache TTL seconds (default: {DEFAULT_TTL} or $SS_SSH_TTL)")
+        pens.add_argument("--force", action="store_true", help="always refresh")
+        _add_no_trunc(pens)
+        _add_output(pens)
+        pens.set_defaults(func=cmd_ssh)
+        pssh.set_defaults(func=cmd_ssh)
+    except Exception:  # pragma: no cover - ssh optional if module missing
+        pass
+
     ph = sub.add_parser("help")
     _add_no_trunc(ph)
     ph.set_defaults(func=lambda _a: print(_usage(), end=""))

@@ -3,10 +3,12 @@
 Description:
     Implements ``corvus ssh sync``, ``corvus ssh config`` and
     ``corvus ssh _ensure`` (lazy ``Match exec`` helper). Secrets that are
-    SSH private keys are stored in Corvus (convention ``ssh/<host>`` or
-    ``kind=ssh``). This module materializes them to a local key directory
-    (0700, files 0600) and generates an OpenSSH ``Include`` fragment so
-    native ``ssh <host>`` works without a wrapper.
+    SSH private keys are stored in Corvus. Out of the box it discovers
+    ``kind=ssh`` secrets, including the default ``corvus-agent`` layout
+    ``hosts/<hostname>/users/<account>`` (key_prefix ``hosts/``). This
+    module materializes them to a local key directory (0700, files 0600)
+    and generates an OpenSSH ``Include`` fragment so native ``ssh <host>``
+    works without a wrapper.
 
 Inputs:
     Credentials via :mod:`corvus_cli.api` (``_proj_api``), filesystem
@@ -18,13 +20,15 @@ Outputs:
 
 Example:
     >>> # corvus ssh sync --dry-run  -> lists hosts without fetching values
-    >>> # corvus ssh config --install
+    >>> # corvus ssh config install   -> adds Include to ~/.ssh/config
     >>> # corvus ssh _ensure web01
+    >>> # with agent default: hosts/web01/users/deploy -> ssh web01 (User deploy)
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -33,7 +37,8 @@ from pathlib import Path
 from corvus_cli.api import _proj_api
 from corvus_cli.output import emit, print_table
 
-DEFAULT_PREFIX = "ssh/"
+# ponytail: matches corvus-agent default key_prefix="hosts/"
+DEFAULT_PREFIX = "hosts/"
 DEFAULT_FRAG = Path.home() / ".ssh" / "config.d" / "corvus"
 # ponytail: TTL 3600s file cache; lower if keys rotate fast
 DEFAULT_TTL = 3600
@@ -79,7 +84,34 @@ def _sanitize_host(host: str) -> str:
         host = host.split("@", 1)[-1]
         if "/" in host or ".." in host:
             sys.exit(f"invalid host {host!r}")
+    # ponytail: host alias must not contain whitespace
+    if re.search(r"\s", host):
+        sys.exit(f"invalid host {host!r}")
     return host
+
+
+def _parse_agent_key(key: str) -> tuple[str, str] | None:
+    """Return (hostname, account) if *key* matches ``<prefix><host>/users/<acct>``.
+
+    Matches the default ``corvus-agent`` layout ``hosts/<host>/users/<acct>``
+    and any custom ``key_prefix`` that still contains ``/users/``. Host and
+    account are single path segments without slashes.
+    """
+    if "/users/" not in key:
+        return None
+    # split on the last /users/ to handle prefix containing same string unlikely
+    left, _, acct = key.rpartition("/users/")
+    if not left or not acct or "/" in acct or "\\" in acct or ".." in acct:
+        return None
+    # host is last segment of left part
+    host = left.rsplit("/", 1)[-1] if "/" in left else left
+    if not host or "/" in host or "\\" in host or ".." in host:
+        return None
+    # must look like <prefix>host/users/acct, not bare users/acct
+    if "/" not in left and left == host:
+        # key like "web01/users/deploy" without prefix: still valid agent-like
+        pass
+    return host, acct
 
 
 def _load_host_map() -> dict[str, str]:
@@ -107,6 +139,110 @@ def _host_to_key(host: str, prefix: str, host_map: dict[str, str] | None = None)
     if host in host_map:
         return host_map[host]
     return f"{prefix}{host}" if prefix else host
+
+
+def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str]) -> list[dict]:
+    """Derive sync entries for *candidates* handling agent layout out of the box.
+
+    Returns list of dicts {alias, aliases, file, key, user, hostname, kind}.
+    For agent key hosts/<host>/users/<acct> -> alias host (first per host) or host-acct,
+    file host-acct, user acct, hostname host.
+    For manual keys -> alias derived from suffix/basename, file alias, no user.
+    Host map overrides via rev_map.
+    """
+    rev_map = {v: k for k, v in host_map.items()}
+    # First pass: build raw entries
+    raw: list[dict] = []
+    for it in candidates:
+        key = it.get("key") or ""
+        kind = it.get("kind") or ""
+        if key in rev_map:
+            alias = rev_map[key]
+            try:
+                alias = _sanitize_host(alias)
+            except SystemExit:
+                continue
+            # preserve agent User/HostName if key matches agent layout
+            agent = _parse_agent_key(key)
+            if agent:
+                hostname, account = agent
+                try:
+                    _sanitize_host(hostname)
+                    _sanitize_host(account)
+                except SystemExit:
+                    agent = None
+                if agent:
+                    raw.append({"alias": alias, "aliases": [alias], "file": alias, "key": key, "user": account, "hostname": hostname, "kind": kind})
+                    continue
+            raw.append({"alias": alias, "aliases": [alias], "file": alias, "key": key, "user": None, "hostname": None, "kind": kind})
+            continue
+        agent = _parse_agent_key(key)
+        if agent:
+            hostname, account = agent
+            try:
+                _sanitize_host(hostname)
+                _sanitize_host(account)
+            except SystemExit:
+                continue
+            file_name = f"{hostname}-{account}"
+            raw.append({"alias": hostname, "aliases": [hostname, file_name], "file": file_name, "key": key, "user": account, "hostname": hostname, "kind": kind, "_agent": True})
+            continue
+        # non-agent
+        if prefix and key.startswith(prefix):
+            alias = key[len(prefix):]
+        else:
+            alias = key.rsplit("/", 1)[-1]
+        alias = alias.strip()
+        if not alias:
+            continue
+        alias_norm = alias.replace("/", "-").replace("\\", "-")
+        # also handle agent-like but without prefix detection fallback already covered
+        try:
+            alias_norm = _sanitize_host(alias_norm)
+        except SystemExit:
+            continue
+        raw.append({"alias": alias_norm, "aliases": [alias_norm], "file": alias_norm, "key": key, "user": None, "hostname": None, "kind": kind})
+
+    # Resolve collisions for agent host aliases: first per hostname keeps bare hostname
+    seen_hostnames: dict[str, int] = {}
+    out: list[dict] = []
+    for e in raw:
+        # mapped entries (no _agent) keep verbatim but reserve bare hostname
+        if e.get("hostname") and "_agent" not in e:
+            if e["alias"] not in [x["alias"] for x in out] and e["file"] not in [x["file"] for x in out]:
+                out.append(e)
+                hn = e["hostname"]
+                if hn == e["alias"]:
+                    seen_hostnames[hn] = seen_hostnames.get(hn, 0) + 1
+                continue
+            out.append(e)
+            continue
+        if e.get("_agent"):
+            hn = e["hostname"]
+            n = seen_hostnames.get(hn, 0)
+            seen_hostnames[hn] = n + 1
+            if n == 0:
+                e["alias"] = hn
+                e["aliases"] = [hn, e["file"]]
+            else:
+                e["alias"] = e["file"]
+                e["aliases"] = [e["file"]]
+            e.pop("_agent", None)
+            out.append(e)
+        else:
+            alias = e["alias"]
+            if alias not in [x["alias"] for x in out]:
+                out.append(e)
+            else:
+                base = alias
+                i = 2
+                while f"{base}-{i}" in [x["alias"] for x in out]:
+                    i += 1
+                e["alias"] = f"{base}-{i}"
+                e["aliases"] = [e["alias"]]
+                e["file"] = e["alias"]
+                out.append(e)
+    return out
 
 
 def _ensure_dir(p: Path, mode: int = 0o700) -> None:
@@ -157,7 +293,7 @@ def _list_candidates(project: str | None, prefix: str) -> list[dict]:
         if ssh_only:
             return ssh_only
     else:
-        # also include ssh kind outside prefix
+        # also include ssh kind outside prefix (covers agent + manual)
         for it in items:
             if (it.get("kind") or "") == "ssh" and it not in out:
                 out.append(it)
@@ -183,14 +319,25 @@ def _fetch_value(key: str, project: str | None) -> str:
     return str(data["value"])
 
 
-def _write_fragment(hosts: list[str], key_dir: Path, frag: Path, prefix: str) -> None:
+def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str) -> None:
     lines: list[str] = ["# corvus ssh - generated, do not edit", f"# prefix={prefix!r} key_dir={key_dir}", ""]
-    if not hosts:
+    if not entries:
         lines.append("# (no ssh hosts found)")
-    for host in sorted(hosts):
-        key_path = key_dir / host
-        lines.append(f"Host {host}")
-        lines.append(f"  IdentityFile {key_path}")
+    for e in sorted(entries, key=lambda x: x["alias"]):
+        aliases = e.get("aliases") or [e["alias"]]
+        host_line = " ".join(aliases)
+        lines.append(f"Host {host_line}")
+        # For agent entries, HostName disambiguates file-variant aliases
+        hostname = e.get("hostname")
+        if hostname:
+            # if any alias != hostname, HostName is needed for those aliases
+            if any(a != hostname for a in aliases):
+                lines.append(f"  HostName {hostname}")
+            # also if single alias equals hostname, HostName is redundant but harmless; skip to keep minimal
+        user = e.get("user")
+        if user:
+            lines.append(f"  User {user}")
+        lines.append(f"  IdentityFile {key_dir / e['file']}")
         lines.append("  IdentitiesOnly yes")
         lines.append("")
     content = "\n".join(lines)
@@ -214,6 +361,13 @@ def _write_fragment(hosts: list[str], key_dir: Path, frag: Path, prefix: str) ->
             pass
 
 
+def _find_entry_for_host(host: str, entries: list[dict]) -> dict | None:
+    for e in entries:
+        if host in (e.get("aliases") or []) or host == e.get("file") or host == e.get("alias"):
+            return e
+    return None
+
+
 def _cmd_sync(args) -> None:
     project = getattr(args, "project", None)
     prefix = getattr(args, "prefix", None)
@@ -227,52 +381,54 @@ def _cmd_sync(args) -> None:
     out_mode = getattr(args, "output", None) or "table"
 
     candidates = _list_candidates(project, prefix)
-    hosts: list[str] = []
-    key_for_host: dict[str, str] = {}
     host_map = _load_host_map()
-    rev_map = {v: k for k, v in host_map.items()}
-    for it in candidates:
-        key = it.get("key") or ""
-        if key in rev_map:
-            host = rev_map[key]
-        elif prefix and key.startswith(prefix):
-            host = key[len(prefix) :]
-        else:
-            host = key.rsplit("/", 1)[-1]
-        host = _sanitize_host(host)
-        if not host:
-            continue
-        hosts.append(host)
-        key_for_host[host] = key
+    entries = _derive_entries(candidates, prefix, host_map)
 
     if out_mode == "json" and dry_run:
-        emit({"prefix": prefix, "key_dir": str(key_dir), "fragment": str(frag), "hosts": hosts, "keys": key_for_host}, "json")
+        emit({"prefix": prefix, "key_dir": str(key_dir), "fragment": str(frag), "hosts": [e["alias"] for e in entries], "keys": {e["alias"]: e["key"] for e in entries}, "entries": entries}, "json")
         return
 
     if dry_run:
-        if not hosts:
+        if not entries:
             print("(no ssh hosts found)")
             return
-        print_table(["HOST", "SECRET_KEY", "KEY_PATH"], [[h, key_for_host[h], str(key_dir / h)] for h in sorted(hosts)])
+        rows = []
+        for e in sorted(entries, key=lambda x: x["alias"]):
+            rows.append([e["alias"], e["key"], str(key_dir / e["file"]), e.get("user") or "", e.get("hostname") or ""])
+        # hide empty USER/HOSTNAME columns if none
+        has_user = any(r[3] for r in rows)
+        has_host = any(r[4] for r in rows)
+        headers = ["HOST", "SECRET_KEY", "KEY_PATH"]
+        if has_user:
+            headers.append("USER")
+        else:
+            rows = [r[:3] for r in rows]
+        if has_host and has_user:
+            headers.append("HOSTNAME")
+            # rows already have 5 cols
+        elif has_host and not has_user:
+            headers.append("HOSTNAME")
+            rows = [r[:3] + [r[4]] for r in rows]
+        print_table(headers, rows)
         return
 
     _ensure_dir(key_dir, 0o700)
-    ok: list[tuple[str, str]] = []
+    ok_entries: list[dict] = []
     failed: list[tuple[str, str]] = []
-    for host in sorted(hosts):
-        key = key_for_host[host]
+    for e in sorted(entries, key=lambda x: x["alias"]):
+        key = e["key"]
         try:
             val = _fetch_value(key, project)
-            _write_key_atomic(key_dir / host, val)
-            ok.append((host, key))
-        except SystemExit as e:
-            failed.append((host, str(e).splitlines()[0][:120]))
+            _write_key_atomic(key_dir / e["file"], val)
+            ok_entries.append(e)
+        except SystemExit as exc:
+            failed.append((e["alias"], str(exc).splitlines()[0][:120]))
 
     if do_fragment:
-        _write_fragment([h for h, _ in ok], key_dir, frag, prefix)
+        _write_fragment(ok_entries, key_dir, frag, prefix)
 
     if do_clean and key_dir.is_dir():
-        expected = {h for h, _ in ok}
+        expected = {e["file"] for e in ok_entries}
         for p in key_dir.iterdir():
             if p.is_file() and p.name not in expected and not p.name.startswith("."):
                 try:
@@ -281,15 +437,16 @@ def _cmd_sync(args) -> None:
                     pass
 
     if out_mode == "json":
-        emit({"ok": [h for h, _ in ok], "failed": failed, "key_dir": str(key_dir), "fragment": str(frag)}, "json")
+        emit({"ok": [e["alias"] for e in ok_entries], "failed": failed, "key_dir": str(key_dir), "fragment": str(frag)}, "json")
         return
-    if ok:
-        print_table(["HOST", "SECRET_KEY", "KEY_PATH"], [[h, key_for_host[h], str(key_dir / h)] for h, _ in ok])
+    if ok_entries:
+        rows = [[e["alias"], e["key"], str(key_dir / e["file"])] for e in ok_entries]
+        print_table(["HOST", "SECRET_KEY", "KEY_PATH"], rows)
     if failed:
         print("\nfailed:", file=sys.stderr)
         for h, msg in failed:
             print(f"  {h}: {msg}", file=sys.stderr)
-    print(f"synced {len(ok)} key(s) to {key_dir}", file=sys.stderr)
+    print(f"synced {len(ok_entries)} key(s) to {key_dir}", file=sys.stderr)
     if do_fragment:
         print(f"fragment {frag}", file=sys.stderr)
     if failed:
@@ -366,7 +523,32 @@ def _cmd_ensure(args) -> None:
         ttl = int(ttl)
     force = bool(getattr(args, "force", False))
 
-    dest = key_dir / host
+    # Resolve file/key for host (host_map + agent alias lookup)
+    host_map = _load_host_map()
+    key: str | None = None
+    file_name: str = host
+    if host in host_map:
+        key = host_map[host]
+        file_name = host
+    else:
+        # try to find via candidate list (covers agent alias like web01 or web01-deploy)
+        try:
+            candidates = _list_candidates(project, prefix)
+            entries = _derive_entries(candidates, prefix, host_map)
+            ent = _find_entry_for_host(host, entries)
+            if ent:
+                key = ent["key"]
+                file_name = ent["file"]
+        except Exception:
+            pass
+        if key is None:
+            key = _host_to_key(host, prefix, host_map)
+            file_name = host
+            # if key is agent-like but host was bare hostname, file should be host-<account>?
+            # For ambiguous bare hostname with multiple accounts, the derived entry already handled above.
+            # Fallback stays as host.
+
+    dest = key_dir / file_name
     if dest.is_file() and not force and ttl > 0:
         try:
             age = time.time() - dest.stat().st_mtime
@@ -375,7 +557,7 @@ def _cmd_ensure(args) -> None:
         except OSError:
             pass
 
-    key = _host_to_key(host, prefix)
+    assert key is not None
     val = _fetch_value(key, project)
     _write_key_atomic(dest, val)
     sys.exit(0)
