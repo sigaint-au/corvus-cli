@@ -139,9 +139,9 @@ Commands
     delete folder ID                   delete an empty folder (use from list)
 
   SSH hosts (native ssh <host>)
-    ssh config [install|uninstall]      add/remove Include ~/.ssh/config.d/corvus
-    ssh sync [--prefix hosts/] [--eager] [--clean] [--dry-run]  lazy by default → fragment with Match exec (fetch on first ssh); --eager prefetches all keys (agent: hosts/<host>/users/<acct> → ssh <host>)
-    ssh _ensure HOST [--ttl 300]       lazy fetch for Match exec (file-cache TTL)
+    ssh setup                         once: wire ~/.ssh/config + discover hosts
+    ssh list | status | sync [--eager] [--clean]
+    ssh uninstall [--purge]           remove Include (and keys with --purge)
 
   Admin (global)
     get users [ -l QUERY ] | get audit [ --source project|org|secret|access ]
@@ -170,7 +170,7 @@ _COMPLETION_SH: dict[str, str] = {
 _corvus_completions() {
   local cur="${COMP_WORDS[COMP_CWORD]}" cmds="login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion"
   local resources="secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user"
-  local ssh_sub="sync config _ensure"
+  local ssh_sub="setup list status sync uninstall"
   if [[ $COMP_CWORD -eq 1 ]]; then COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return; fi
   if [[ "${COMP_WORDS[1]}" == "ssh" ]]; then
     if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=( $(compgen -W "$ssh_sub" -- "$cur") ); return; fi
@@ -185,7 +185,7 @@ complete -F _corvus_completions corvus
 _corvus() {
   local -a cmds=(login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion)
   local -a res=(secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user)
-  local -a ssh_sub=(sync config _ensure)
+  local -a ssh_sub=(setup list status sync uninstall)
   if (( CURRENT == 2 )); then _describe 'command' cmds
   elif [[ $words[2] == ssh ]] && (( CURRENT == 3 )); then _describe 'ssh subcommand' ssh_sub
   else _describe 'resource' res; fi
@@ -195,6 +195,6 @@ compdef _corvus corvus
     "fish": r"""# corvus fish completion - put in ~/.config/fish/completions/corvus.fish
 complete -c corvus -n '__fish_seen_subcommand_from get create delete apply set restore grant' -a 'secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user'
 complete -c corvus -n 'not __fish_seen_subcommand_from login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion' -a 'login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion'
-complete -c corvus -n '__fish_seen_subcommand_from ssh' -a 'sync config _ensure'
+complete -c corvus -n '__fish_seen_subcommand_from ssh' -a 'setup list status sync uninstall'
 """,
 }

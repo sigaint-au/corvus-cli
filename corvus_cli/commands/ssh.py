@@ -1,24 +1,25 @@
-"""SSH host integration (flow 4: `Include` fragment + key dir).
+"""SSH host integration (flow 4: `Include` fragment + ssh-agent).
 
 Description:
-    Implements ``corvus ssh sync``, ``corvus ssh config`` and
-    ``corvus ssh _ensure`` (lazy ``Match exec`` helper). Secrets that are
+    Implements ``corvus ssh setup``, ``list``, ``status``, ``sync``,
+    ``uninstall`` and the internal ``_ensure`` ``Match exec`` helper. Secrets that are
     SSH private keys are stored in Corvus. Out of the box it discovers
     ``kind=ssh`` secrets, including the ``corvus-agent`` layout
     ``hosts/<hostname>/users/<account>/ssh`` (``_ssh_account_key`` with
     ``key_prefix`` ``hosts/``) and legacy ``hosts/<hostname>/users/<account>``.
     The companion ``hosts/<hostname>/users/<account>/password`` (``_account_key``)
-    is ignored for SSH. This module materializes them to a local key directory
-    (0700, files 0600) and generates an OpenSSH ``Include`` fragment so
-    native ``ssh <host>`` works without a wrapper.
+    is ignored for SSH. ``_ensure`` loads the private key into ``ssh-agent``
+    (``ssh-add -t TTL``) and writes only the ``.pub`` to the key directory so
+    native ``ssh <host>`` works with ``IdentitiesOnly yes``.
 
 Inputs:
     Credentials via :mod:`corvus_cli.api` (``_proj_api``), filesystem
-    (``~/.config/corvus/keys``, ``~/.ssh/config`` and ``~/.ssh/config.d/corvus``),
-    optional host map ``~/.config/corvus/ssh_hosts`` and argparse namespace.
+    (``~/.config/corvus/keys/*.pub``, ``~/.ssh/config`` and ``~/.ssh/config.d/corvus``),
+    ``SSH_AUTH_SOCK``, optional host map ``~/.config/corvus/ssh_hosts`` and argparse namespace.
 
 Outputs:
-    Keys and fragment on disk, exit messages, or ``sys.exit`` on 403/approval.
+    Public keys and fragment on disk, identities in ssh-agent, exit messages,
+    or ``sys.exit`` on 403/approval / missing agent.
 
 Example:
     >>> # corvus ssh sync --dry-run  -> lists hosts without fetching values
@@ -31,8 +32,11 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
-import time
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -45,6 +49,22 @@ DEFAULT_FRAG = Path.home() / ".ssh" / "config.d" / "corvus"
 # ponytail: TTL 300s for lazy JIT keys (was 3600); short enough to pick up rotations
 DEFAULT_TTL = 300
 INCLUDE_LINE = "Include ~/.ssh/config.d/corvus"
+AGENT_HINT = "eval $(ssh-agent)   # Fedora/RHEL: systemctl --user enable --now ssh-agent.socket"
+
+SSH_HELP = """\
+corvus ssh — native ssh <host> with keys from Corvus
+
+  corvus ssh setup              once: wire ~/.ssh/config and discover hosts
+  ssh <host>                    first connect loads that key into ssh-agent
+
+  corvus ssh list               hosts you can ssh to (no secrets fetched)
+  corvus ssh status             agent, Include, which keys are loaded
+  corvus ssh sync               refresh host list / fragment
+  corvus ssh sync --eager       prefetch all keys into ssh-agent now
+  corvus ssh uninstall [--purge]
+
+ssh-agent must be running:
+  """ + AGENT_HINT + "\n"
 
 
 def _config_dir() -> Path:
@@ -74,6 +94,68 @@ def _resolve_frag(custom: str | None) -> Path:
     if custom:
         return Path(custom).expanduser()
     return DEFAULT_FRAG
+
+
+def _ssh_config_path(custom: str | None) -> Path:
+    return Path(custom or (Path.home() / ".ssh" / "config")).expanduser()
+
+
+def _include_line_for(frag: Path) -> str:
+    try:
+        if frag.resolve() == DEFAULT_FRAG.expanduser().resolve():
+            return INCLUDE_LINE
+    except OSError:
+        pass
+    if frag == DEFAULT_FRAG:
+        return INCLUDE_LINE
+    return f"Include {frag}"
+
+
+def _include_present(ssh_config: Path, frag: Path) -> bool:
+    if not ssh_config.is_file():
+        return False
+    text = ssh_config.read_text()
+    return _include_line_for(frag) in text or INCLUDE_LINE in text or str(frag) in text
+
+
+def _should_wire_include(args) -> bool:
+    """Do not touch ~/.ssh/config when tests/users only override the fragment path."""
+    if getattr(args, "no_fragment", False):
+        return False
+    custom_frag = getattr(args, "config_fragment", None)
+    custom_ssh = getattr(args, "ssh_config", None)
+    if custom_frag and not custom_ssh:
+        return False
+    return True
+
+
+def _install_include(ssh_config: Path, frag: Path) -> bool:
+    """Idempotently add Include and an empty fragment. Returns True if anything changed."""
+    changed = False
+    line = _include_line_for(frag)
+    _ensure_dir(frag.parent, 0o700)
+    if not frag.exists():
+        frag.write_text("# corvus ssh - generated, do not edit\n")
+        try:
+            frag.chmod(0o600)
+        except OSError:
+            pass
+        changed = True
+    _ensure_dir(ssh_config.parent, 0o700)
+    if not ssh_config.exists():
+        ssh_config.write_text(f"{line}\n")
+        try:
+            ssh_config.chmod(0o600)
+        except OSError:
+            pass
+        print(f"installed {line} in {ssh_config}", file=sys.stderr)
+        return True
+    text = ssh_config.read_text()
+    if line not in text and INCLUDE_LINE not in text and str(frag) not in text:
+        ssh_config.write_text(f"{line}\n" + text)
+        print(f"installed {line} in {ssh_config}", file=sys.stderr)
+        changed = True
+    return changed
 
 
 def _sanitize_host(host: str) -> str:
@@ -302,7 +384,6 @@ def _write_key_atomic(path: Path, value: str) -> None:
         path.parent.chmod(0o700)
     except OSError:
         pass
-    import tempfile
 
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
@@ -321,6 +402,182 @@ def _write_key_atomic(path: Path, value: str) -> None:
             Path(tmp).unlink()
         except FileNotFoundError:
             pass
+
+
+def _identity_path(key_dir: Path, file_name: str) -> Path:
+    return key_dir / f"{file_name}.pub"
+
+
+def _cfg_path(path: Path) -> str:
+    s = str(path)
+    if re.search(r"\s", s):
+        return f'"{s}"'
+    return s
+
+
+def _ttl_from_args(args) -> int:
+    ttl = getattr(args, "ttl", None)
+    if ttl is None:
+        try:
+            return int(os.environ.get("SS_SSH_TTL", str(DEFAULT_TTL)))
+        except (TypeError, ValueError):
+            return DEFAULT_TTL
+    return int(ttl)
+
+
+def _ssh_add_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("SSH_ASKPASS_REQUIRE", "never")
+    return env
+
+
+def _agent_status() -> tuple[str, int | None]:
+    """Return (ok|empty|missing, identity count)."""
+    if not os.environ.get("SSH_AUTH_SOCK"):
+        return "missing", None
+    r = subprocess.run(["ssh-add", "-l"], capture_output=True, text=True)
+    if r.returncode == 2:
+        return "missing", None
+    if r.returncode == 1:
+        return "empty", 0
+    n = len([ln for ln in r.stdout.splitlines() if ln.strip()])
+    return "ok", n
+
+
+def _require_ssh_agent() -> None:
+    st, _ = _agent_status()
+    if st == "missing":
+        sys.exit(f"ssh-agent not available\nhint: {AGENT_HINT}")
+
+
+def _warn_if_no_agent() -> str:
+    st, n = _agent_status()
+    if st == "missing":
+        print(
+            f"warning: ssh-agent is not running — `ssh <host>` will fail until you start one\n  {AGENT_HINT}",
+            file=sys.stderr,
+        )
+    return st
+
+
+_FP_RE = re.compile(r"SHA256:[A-Za-z0-9+/]+")
+
+
+def _pub_fingerprint(pub: Path) -> str | None:
+    r = subprocess.run(
+        ["ssh-keygen", "-lf", str(pub), "-E", "sha256"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        return None
+    m = _FP_RE.search(r.stdout)
+    return m.group(0) if m else None
+
+
+def _pub_in_agent(pub: Path) -> bool:
+    fp = _pub_fingerprint(pub)
+    if not fp:
+        return False
+    r = subprocess.run(
+        ["ssh-add", "-l", "-E", "sha256"],
+        capture_output=True,
+        text=True,
+        env=_ssh_add_env(),
+    )
+    if r.returncode != 0:
+        return False
+    return fp in r.stdout
+
+
+def _agent_delete(pub: Path) -> None:
+    if not os.environ.get("SSH_AUTH_SOCK") or not pub.is_file():
+        return
+    subprocess.run(["ssh-add", "-d", str(pub)], capture_output=True, check=False, env=_ssh_add_env())
+
+
+def _ssh_keygen_pub(priv: Path) -> str:
+    r = subprocess.run(
+        ["ssh-keygen", "-y", "-f", str(priv), "-P", ""],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or "").strip() or str(r.returncode)
+        sys.exit(f"not an ssh private key: {err}")
+    return r.stdout
+
+
+def _ssh_add(priv: Path, ttl: int) -> None:
+    cmd = ["ssh-add"]
+    if ttl > 0:
+        cmd += ["-t", str(ttl)]
+    cmd += ["-q", str(priv)]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=_ssh_add_env())
+    if r.returncode != 0:
+        err = (r.stderr or "").strip() or str(r.returncode)
+        sys.exit(
+            f"ssh-add failed: {err}\n"
+            f"hint: {AGENT_HINT}"
+        )
+
+
+def _load_private_into_agent(value: str, pub_path: Path, ttl: int) -> None:
+    """Write .pub, ssh-add -t, unlink the private temp file. Never leaves a private key path."""
+    _ensure_dir(pub_path.parent, 0o700)
+    if pub_path.is_file():
+        _agent_delete(pub_path)
+    fd, tmp = tempfile.mkstemp(dir=str(pub_path.parent), prefix=".#priv.")
+    tmp_path = Path(tmp)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(value)
+            if not value.endswith("\n"):
+                f.write("\n")
+        tmp_path.chmod(0o600)
+        pub = _ssh_keygen_pub(tmp_path)
+        _write_key_atomic(pub_path, pub)
+        _ssh_add(tmp_path, ttl)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _sweep_key_dir(key_dir: Path, expected_pubs: set[str] | None = None) -> int:
+    """Drop leftover private files; if *expected_pubs* is set, also drop orphan .pub files."""
+    if not key_dir.is_dir():
+        return 0
+    n = 0
+    for p in key_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.name.startswith(".#priv."):
+            drop = True
+        elif p.name.startswith("."):
+            continue
+        else:
+            drop = p.suffix != ".pub" or (expected_pubs is not None and p.name not in expected_pubs)
+        if not drop:
+            continue
+        if p.suffix == ".pub":
+            _agent_delete(p)
+        try:
+            p.unlink()
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
+def _purge_key_dir(key_dir: Path) -> None:
+    if not key_dir.is_dir():
+        return
+    for p in key_dir.iterdir():
+        if p.is_file() and p.suffix == ".pub":
+            _agent_delete(p)
+    shutil.rmtree(key_dir, ignore_errors=True)
 
 
 def _list_candidates(project: str | None, prefix: str) -> list[dict]:
@@ -362,19 +619,26 @@ def _fetch_value(key: str, project: str | None) -> str:
     return str(data["value"])
 
 
+def _ensure_exec_cmd(alias: str, key_dir: Path, prefix: str) -> str:
+    parts = ["corvus", "ssh", "_ensure", alias, "--key-dir", str(key_dir)]
+    if prefix != DEFAULT_PREFIX:
+        parts += ["--prefix", prefix]
+    return " ".join(shlex.quote(p) for p in parts)
+
+
 def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str, lazy: bool = False) -> None:
-    lines: list[str] = ["# corvus ssh - generated, do not edit", f"# prefix={prefix!r} key_dir={key_dir} lazy={lazy}", ""]
+    lines: list[str] = ["# corvus ssh - generated, do not edit", f"# prefix={prefix!r} key_dir={key_dir} lazy={lazy} agent=1", ""]
     if not entries:
         lines.append("# (no ssh hosts found)")
     for e in sorted(entries, key=lambda x: x["alias"]):
         aliases = e.get("aliases") or [e["alias"]]
+        ident = _cfg_path(_identity_path(key_dir, e["file"]))
         if lazy:
-            # JIT: ssh triggers corvus ssh _ensure on first use; keys live in tmpfs until TTL
+            # JIT: ssh triggers corvus ssh _ensure on first use; private key lives in ssh-agent until TTL
             # Match host takes a comma-separated pattern list (Host uses spaces).
             # A space after the first alias is parsed as the next Match attribute.
             host_pat = ",".join(aliases)
-            ensure = f'corvus ssh _ensure {e["alias"]} --key-dir {key_dir} --ttl {DEFAULT_TTL}'
-            # quote key_dir if it contains spaces
+            ensure = _ensure_exec_cmd(e["alias"], key_dir, prefix)
             lines.append(f'Match host {host_pat} exec "{ensure}"')
             hostname = e.get("hostname")
             if hostname and any(a != hostname for a in aliases):
@@ -382,7 +646,7 @@ def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str,
             user = e.get("user")
             if user:
                 lines.append(f"  User {user}")
-            lines.append(f"  IdentityFile {key_dir / e['file']}")
+            lines.append(f"  IdentityFile {ident}")
             lines.append("  IdentitiesOnly yes")
             lines.append("")
             continue
@@ -398,7 +662,7 @@ def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str,
         user = e.get("user")
         if user:
             lines.append(f"  User {user}")
-        lines.append(f"  IdentityFile {key_dir / e['file']}")
+        lines.append(f"  IdentityFile {ident}")
         lines.append("  IdentitiesOnly yes")
         lines.append("")
     content = "\n".join(lines)
@@ -407,7 +671,6 @@ def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str,
         frag.parent.chmod(0o700)
     except OSError:
         pass
-    import tempfile
 
     fd, tmp = tempfile.mkstemp(dir=str(frag.parent), prefix=".corvus.")
     try:
@@ -429,6 +692,64 @@ def _find_entry_for_host(host: str, entries: list[dict]) -> dict | None:
     return None
 
 
+def _sorted_entries(entries: list[dict]) -> list[dict]:
+    return sorted(entries, key=lambda x: x["alias"])
+
+
+def _host_table(entries: list[dict]) -> tuple[list[str], list[list[str]]]:
+    rows = []
+    for e in _sorted_entries(entries):
+        aliases = e.get("aliases") or [e["alias"]]
+        extra = " ".join(a for a in aliases if a != e["alias"])
+        rows.append([e["alias"], e.get("user") or "", extra, f"ssh {e['alias']}"])
+    has_user = any(r[1] for r in rows)
+    has_alias = any(r[2] for r in rows)
+    headers = ["HOST"]
+    out_rows: list[list[str]] = []
+    for r in rows:
+        row = [r[0]]
+        if has_user:
+            row.append(r[1])
+        if has_alias:
+            row.append(r[2])
+        row.append(r[3])
+        out_rows.append(row)
+    if has_user:
+        headers.append("USER")
+    if has_alias:
+        headers.append("ALIASES")
+    headers.append("CONNECT")
+    return headers, out_rows
+
+
+def _print_hosts(entries: list[dict], title: str = "") -> None:
+    if not entries:
+        print("(no ssh hosts found)")
+        return
+    headers, rows = _host_table(entries)
+    try:
+        from rich.console import Console  # type: ignore
+        from rich.table import Table  # type: ignore
+
+        t = Table(title=title or None, show_lines=False)
+        for h in headers:
+            t.add_column(h, overflow="fold")
+        for r in rows:
+            t.add_row(*r)
+        Console().print(t)
+    except Exception:
+        print_table(headers, rows)
+
+
+def _next_ssh(entries: list[dict], agent_st: str) -> None:
+    host = _sorted_entries(entries)[0]["alias"] if entries else "<host>"
+    if agent_st == "missing":
+        print(f"next: start ssh-agent, then: ssh {host}\n  {AGENT_HINT}", file=sys.stderr)
+        return
+    if entries:
+        print(f"next: ssh {host}", file=sys.stderr)
+
+
 def _cmd_sync(args) -> None:
     project = getattr(args, "project", None)
     prefix = getattr(args, "prefix", None)
@@ -446,107 +767,44 @@ def _cmd_sync(args) -> None:
     host_map = _load_host_map()
     entries = _derive_entries(candidates, prefix, host_map)
 
-    # optional: rich feedback helpers (import lazily so --help / tests don't require dep)
-    def _rich_panel(msg: str, title: str = "") -> None:
-        try:
-            from rich.console import Console  # type: ignore
-            from rich.panel import Panel  # type: ignore
-
-            Console(stderr=True).print(Panel(msg, title=title, border_style="blue"))
-        except Exception:
-            print(msg, file=sys.stderr)
-
-    def _rich_table(headers: list[str], rows: list[list[str]], title: str = "") -> None:
-        try:
-            from rich.console import Console  # type: ignore
-            from rich.table import Table  # type: ignore
-
-            t = Table(title=title, show_lines=False)
-            for h in headers:
-                t.add_column(h, overflow="fold")
-            for r in rows:
-                t.add_row(*[str(c) for c in r])
-            Console().print(t)
-            return
-        except Exception:
-            pass
-        print_table(headers, rows)
-
     if out_mode == "json" and dry_run:
         emit({"prefix": prefix, "key_dir": str(key_dir), "fragment": str(frag), "hosts": [e["alias"] for e in entries], "keys": {e["alias"]: e["key"] for e in entries}, "entries": entries}, "json")
         return
 
     if dry_run:
-        if not entries:
-            print("(no ssh hosts found)")
-            return
-        rows = []
-        for e in sorted(entries, key=lambda x: x["alias"]):
-            rows.append([e["alias"], e["key"], str(key_dir / e["file"]), e.get("user") or "", e.get("hostname") or ""])
-        # hide empty USER/HOSTNAME columns if none
-        has_user = any(r[3] for r in rows)
-        has_host = any(r[4] for r in rows)
-        headers = ["HOST", "SECRET_KEY", "KEY_PATH"]
-        if has_user:
-            headers.append("USER")
-        else:
-            rows = [r[:3] for r in rows]
-        if has_host and has_user:
-            headers.append("HOSTNAME")
-            # rows already have 5 cols
-        elif has_host and not has_user:
-            headers.append("HOSTNAME")
-            rows = [r[:3] + [r[4]] for r in rows]
-        # rich in dry-run too
-        try:
-            from rich.table import Table  # type: ignore
-            from rich.console import Console  # type: ignore
-
-            t = Table(title=f"dry-run · {len(entries)} host(s) · prefix={prefix!r}", show_lines=False)
-            for h in headers:
-                t.add_column(h, overflow="fold")
-            for r in rows:
-                t.add_row(*[str(c) for c in r])
-            Console().print(t)
-        except Exception:
-            print_table(headers, rows)
-        if not eager:
-            print(f"lazy: keys will be fetched on first `ssh <host>` to {key_dir} (TTL {DEFAULT_TTL}s); use --eager to write them now", file=sys.stderr)
+        _print_hosts(entries, title=f"{len(entries)} host(s)")
+        if entries:
+            print("nothing fetched; `ssh <host>` loads that key into ssh-agent", file=sys.stderr)
         return
 
-    # lazy (default): only write fragment; keys materialized on first ssh via _ensure
+    agent_st = _warn_if_no_agent()
+    if do_fragment and _should_wire_include(args):
+        _install_include(_ssh_config_path(getattr(args, "ssh_config", None)), frag)
+
+    # lazy (default): only write fragment; private keys loaded into ssh-agent on first ssh via _ensure
     if not eager:
         _ensure_dir(key_dir, 0o700)
         if do_fragment:
             _write_fragment(entries, key_dir, frag, prefix, lazy=True)
-        # prune stale entries from fragment perspective; don't fetch values
-        if do_clean and key_dir.is_dir():
-            expected = {e["file"] for e in entries}
-            removed = 0
-            for p in key_dir.iterdir():
-                if p.is_file() and p.name not in expected and not p.name.startswith("."):
-                    try:
-                        p.unlink()
-                        removed += 1
-                    except OSError:
-                        pass
-            if removed:
-                print(f"cleaned {removed} stale key(s) from {key_dir}", file=sys.stderr)
+        removed = _sweep_key_dir(key_dir, {f"{e['file']}.pub" for e in entries} if do_clean else None)
+        if do_clean and removed:
+            print(f"cleaned {removed} stale file(s) from {key_dir}", file=sys.stderr)
+        elif removed:
+            print(f"removed {removed} leftover private key(s) from {key_dir}", file=sys.stderr)
         if out_mode == "json":
-            emit({"mode": "lazy", "hosts": [e["alias"] for e in entries], "key_dir": str(key_dir), "fragment": str(frag) if do_fragment else None, "ttl": DEFAULT_TTL, "prefix": prefix}, "json")
+            emit({"mode": "lazy", "agent": True, "hosts": [e["alias"] for e in entries], "key_dir": str(key_dir), "fragment": str(frag) if do_fragment else None, "ttl": DEFAULT_TTL, "prefix": prefix}, "json")
             return
-        if entries:
-            _rich_table(["HOST", "SECRET_KEY", "KEY_PATH"], [[e["alias"], e["key"], str(key_dir / e["file"])] for e in sorted(entries, key=lambda x: x["alias"])], title=f"lazy · {len(entries)} host(s) · keys on first ssh (TTL {DEFAULT_TTL}s)")
-            _rich_panel(f"fragment: {frag}\nkey_dir: {key_dir} (tmpfs when $XDG_RUNTIME_DIR set)\nnext: ssh <host>  — first connect fetches the key; use `corvus ssh sync --eager` for offline prefetch", title="ready")
-        else:
+        _print_hosts(entries, title=f"{len(entries)} host(s) · keys load on first ssh")
+        if not entries:
             print(f"no ssh hosts (prefix={prefix!r})", file=sys.stderr)
-            if do_fragment:
-                print(f"fragment {frag}", file=sys.stderr)
+        _next_ssh(entries, agent_st)
         return
 
+    _require_ssh_agent()
     _ensure_dir(key_dir, 0o700)
     ok_entries: list[dict] = []
     failed: list[tuple[str, str]] = []
+    ttl = _ttl_from_args(args)
     # rich progress for eager bulk fetch
     try:
         from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn  # type: ignore
@@ -558,121 +816,174 @@ def _cmd_sync(args) -> None:
 
     def _fetch_all_eager():
         nonlocal ok_entries, failed
+        work = list(sorted(entries, key=lambda x: x["alias"]))
         if use_progress:
             console = Console(stderr=True)
             with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(), console=console) as prog:
-                task = prog.add_task(f"fetching {len(entries)} key(s)", total=len(entries))
-                for e in sorted(entries, key=lambda x: x["alias"]):
+                task = prog.add_task(f"loading {len(work)} key(s) into ssh-agent", total=len(work))
+                for e in work:
                     prog.update(task, description=f"fetch {e['alias']}")
                     try:
                         val = _fetch_value(e["key"], project)
-                        _write_key_atomic(key_dir / e["file"], val)
+                        _load_private_into_agent(val, _identity_path(key_dir, e["file"]), ttl)
                         ok_entries.append(e)
                     except SystemExit as exc:
                         failed.append((e["alias"], str(exc).splitlines()[0][:120]))
                     prog.advance(task)
-        else:
-            for e in sorted(entries, key=lambda x: x["alias"]):
-                key = e["key"]
-                try:
-                    val = _fetch_value(key, project)
-                    _write_key_atomic(key_dir / e["file"], val)
-                    ok_entries.append(e)
-                except SystemExit as exc:
-                    failed.append((e["alias"], str(exc).splitlines()[0][:120]))
+            return
+        for e in work:
+            try:
+                val = _fetch_value(e["key"], project)
+                _load_private_into_agent(val, _identity_path(key_dir, e["file"]), ttl)
+                ok_entries.append(e)
+            except SystemExit as exc:
+                failed.append((e["alias"], str(exc).splitlines()[0][:120]))
 
     _fetch_all_eager()
 
     if do_fragment:
-        _write_fragment(ok_entries, key_dir, frag, prefix)
-    ok_entries: list[dict] = []
-    failed: list[tuple[str, str]] = []
-    for e in sorted(entries, key=lambda x: x["alias"]):
-        key = e["key"]
-        try:
-            val = _fetch_value(key, project)
-            _write_key_atomic(key_dir / e["file"], val)
-            ok_entries.append(e)
-        except SystemExit as exc:
-            failed.append((e["alias"], str(exc).splitlines()[0][:120]))
+        _write_fragment(ok_entries, key_dir, frag, prefix, lazy=True)
 
-    if do_fragment:
-        _write_fragment(ok_entries, key_dir, frag, prefix)
-
-    if do_clean and key_dir.is_dir():
-        expected = {e["file"] for e in ok_entries}
-        for p in key_dir.iterdir():
-            if p.is_file() and p.name not in expected and not p.name.startswith("."):
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
+    expected = {f"{e['file']}.pub" for e in ok_entries} if do_clean else None
+    _sweep_key_dir(key_dir, expected)
 
     if out_mode == "json":
-        emit({"ok": [e["alias"] for e in ok_entries], "failed": failed, "key_dir": str(key_dir), "fragment": str(frag)}, "json")
+        emit({"ok": [e["alias"] for e in ok_entries], "failed": failed, "key_dir": str(key_dir), "fragment": str(frag), "agent": True}, "json")
         return
-    if ok_entries:
-        rows = [[e["alias"], e["key"], str(key_dir / e["file"])] for e in ok_entries]
-        print_table(["HOST", "SECRET_KEY", "KEY_PATH"], rows)
+    _print_hosts(ok_entries, title=f"{len(ok_entries)} host(s) · loaded into ssh-agent")
     if failed:
         print("\nfailed:", file=sys.stderr)
         for h, msg in failed:
             print(f"  {h}: {msg}", file=sys.stderr)
-    print(f"synced {len(ok_entries)} key(s) to {key_dir}", file=sys.stderr)
-    if do_fragment:
-        print(f"fragment {frag}", file=sys.stderr)
+    print(f"loaded {len(ok_entries)} key(s) into ssh-agent", file=sys.stderr)
+    _next_ssh(ok_entries, "ok")
     if failed:
         sys.exit(1)
 
 
-def _cmd_config(args) -> None:
+def _cmd_setup(args) -> None:
     frag = _resolve_frag(getattr(args, "config_fragment", None))
-    ssh_config = Path(getattr(args, "ssh_config", None) or Path.home() / ".ssh" / "config").expanduser()
-    action = getattr(args, "config_action", None) or getattr(args, "action", None) or "install"
-    if action not in ("install", "uninstall"):
-        sys.exit("ssh config: use 'install' or 'uninstall'")
+    ssh_config = _ssh_config_path(getattr(args, "ssh_config", None))
+    _install_include(ssh_config, frag)
+    _cmd_sync(args)
 
-    if action == "install":
-        _ensure_dir(frag.parent, 0o700)
-        if not frag.exists():
-            frag.write_text("# corvus ssh - generated, do not edit\n")
-            try:
-                frag.chmod(0o600)
-            except OSError:
-                pass
-        _ensure_dir(ssh_config.parent, 0o700)
-        if not ssh_config.exists():
-            ssh_config.write_text(f"{INCLUDE_LINE}\n")
-            try:
-                ssh_config.chmod(0o600)
-            except OSError:
-                pass
-            print(f"created {ssh_config} with {INCLUDE_LINE}", file=sys.stderr)
+
+def _cmd_uninstall(args) -> None:
+    frag = _resolve_frag(getattr(args, "config_fragment", None))
+    ssh_config = _ssh_config_path(getattr(args, "ssh_config", None))
+    line = _include_line_for(frag)
+    if ssh_config.is_file():
+        text = ssh_config.read_text()
+        new = text
+        for needle in (line, INCLUDE_LINE):
+            new = new.replace(needle + "\n", "").replace(needle, "")
+        if new != text:
+            ssh_config.write_text(new)
+            print(f"removed Include from {ssh_config}", file=sys.stderr)
         else:
-            text = ssh_config.read_text()
-            if INCLUDE_LINE not in text and str(frag) not in text:
-                new = f"{INCLUDE_LINE}\n" + text
-                ssh_config.write_text(new)
-                print(f"added {INCLUDE_LINE!r} to {ssh_config}", file=sys.stderr)
-            else:
-                print(f"{ssh_config} already includes {INCLUDE_LINE}", file=sys.stderr)
-        print(f"fragment: {frag}", file=sys.stderr)
-        print(f"key_dir: {_resolve_key_dir(getattr(args, 'key_dir', None))}", file=sys.stderr)
-        print("next: corvus ssh sync", file=sys.stderr)
-        return
+            print(f"{ssh_config} has no Corvus Include", file=sys.stderr)
     else:
-        if ssh_config.is_file():
-            text = ssh_config.read_text()
-            if INCLUDE_LINE in text:
-                text = text.replace(INCLUDE_LINE + "\n", "").replace(INCLUDE_LINE, "")
-                ssh_config.write_text(text)
-                print(f"removed {INCLUDE_LINE!r} from {ssh_config}", file=sys.stderr)
-            else:
-                print(f"{ssh_config} does not contain {INCLUDE_LINE}", file=sys.stderr)
-        else:
-            print(f"{ssh_config} not found", file=sys.stderr)
+        print(f"{ssh_config} not found", file=sys.stderr)
+    purge = bool(getattr(args, "purge", False))
+    key_dir = _resolve_key_dir(getattr(args, "key_dir", None))
+    if purge:
+        _purge_key_dir(key_dir)
         if frag.is_file():
-            print(f"kept fragment {frag} (remove manually if desired)", file=sys.stderr)
+            try:
+                frag.unlink()
+                print(f"removed fragment {frag}", file=sys.stderr)
+            except OSError as e:
+                print(f"could not remove fragment {frag}: {e}", file=sys.stderr)
+        print(f"purged key dir {key_dir}", file=sys.stderr)
+    elif frag.is_file():
+        print(f"kept fragment {frag} (use --purge to delete keys too)", file=sys.stderr)
+
+
+def _cmd_config(args) -> None:
+    action = getattr(args, "config_action", None) or getattr(args, "action", None) or "install"
+    if action == "install":
+        frag = _resolve_frag(getattr(args, "config_fragment", None))
+        ssh_config = _ssh_config_path(getattr(args, "ssh_config", None))
+        if not _install_include(ssh_config, frag):
+            print(f"{ssh_config} already includes {_include_line_for(frag)}", file=sys.stderr)
+        print("next: corvus ssh sync   (or: corvus ssh setup)", file=sys.stderr)
+        return
+    if action == "uninstall":
+        _cmd_uninstall(args)
+        return
+    sys.exit("ssh config: use 'install' or 'uninstall'")
+
+
+def _cmd_status(args) -> None:
+    key_dir = _resolve_key_dir(getattr(args, "key_dir", None))
+    frag = _resolve_frag(getattr(args, "config_fragment", None))
+    ssh_config = _ssh_config_path(getattr(args, "ssh_config", None))
+    st, n = _agent_status()
+    agent_label = {
+        "ok": f"running ({n} identit{'y' if n == 1 else 'ies'})",
+        "empty": "running (no identities yet)",
+        "missing": "not running",
+    }[st]
+    include = "yes" if _include_present(ssh_config, frag) else "missing"
+    frag_label = str(frag) + ("  (ok)" if frag.is_file() else "  (missing)")
+    rows = [
+        ["ssh-agent", agent_label],
+        ["Include", f"{include}  ({ssh_config})"],
+        ["fragment", frag_label],
+        ["key dir", str(key_dir)],
+    ]
+    out_mode = getattr(args, "output", None) or "table"
+    pubs: list[Path] = []
+    if key_dir.is_dir():
+        pubs = sorted(p for p in key_dir.iterdir() if p.is_file() and p.suffix == ".pub")
+    loaded = []
+    for p in pubs:
+        loaded.append([p.stem, "yes" if st != "missing" and _pub_in_agent(p) else "no"])
+
+    catalog: list[dict] = []
+    try:
+        prefix = getattr(args, "prefix", None)
+        if prefix is None:
+            prefix = DEFAULT_PREFIX
+        catalog = _derive_entries(
+            _list_candidates(getattr(args, "project", None), prefix),
+            prefix,
+            _load_host_map(),
+        )
+    except SystemExit:
+        catalog = []
+
+    if out_mode == "json":
+        emit(
+            {
+                "agent": st,
+                "identities": n,
+                "include": include == "yes",
+                "ssh_config": str(ssh_config),
+                "fragment": str(frag),
+                "key_dir": str(key_dir),
+                "pubs": [{"file": a, "in_agent": b == "yes"} for a, b in loaded],
+                "hosts": [e["alias"] for e in catalog],
+            },
+            "json",
+        )
+        return
+    print_table(["CHECK", "VALUE"], rows)
+    if catalog:
+        print()
+        _print_hosts(catalog)
+    elif loaded:
+        print()
+        print_table(["KEY", "IN_AGENT"], loaded)
+    in_ag = [name for name, yes in loaded if yes == "yes"]
+    if in_ag:
+        print(f"in ssh-agent: {', '.join(in_ag)}", file=sys.stderr)
+    if include != "yes":
+        print("next: corvus ssh setup", file=sys.stderr)
+    elif st == "missing":
+        print(f"next: {AGENT_HINT}", file=sys.stderr)
+    elif catalog:
+        print(f"next: ssh {_sorted_entries(catalog)[0]['alias']}", file=sys.stderr)
 
 
 def _cmd_ensure(args) -> None:
@@ -685,15 +996,12 @@ def _cmd_ensure(args) -> None:
     if prefix is None:
         prefix = DEFAULT_PREFIX
     key_dir = _resolve_key_dir(getattr(args, "key_dir", None))
-    ttl = getattr(args, "ttl", None)
-    if ttl is None:
-        try:
-            ttl = int(os.environ.get("SS_SSH_TTL", str(DEFAULT_TTL)))
-        except Exception:
-            ttl = DEFAULT_TTL
-    else:
-        ttl = int(ttl)
+    ttl = _ttl_from_args(args)
     force = bool(getattr(args, "force", False))
+
+    _require_ssh_agent()
+    _ensure_dir(key_dir, 0o700)
+    _sweep_key_dir(key_dir)
 
     # Resolve file/key for host (host_map + agent alias lookup)
     host_map = _load_host_map()
@@ -720,18 +1028,13 @@ def _cmd_ensure(args) -> None:
             # For ambiguous bare hostname with multiple accounts, the derived entry already handled above.
             # Fallback stays as host.
 
-    dest = key_dir / file_name
-    if dest.is_file() and not force and ttl > 0:
-        try:
-            age = time.time() - dest.stat().st_mtime
-            if age < ttl:
-                sys.exit(0)
-        except OSError:
-            pass
+    pub = _identity_path(key_dir, file_name)
+    if pub.is_file() and not force and ttl > 0 and _pub_in_agent(pub):
+        sys.exit(0)
 
     assert key is not None
     val = _fetch_value(key, project)
-    _write_key_atomic(dest, val)
+    _load_private_into_agent(val, pub, ttl)
     sys.exit(0)
 
 
@@ -739,8 +1042,8 @@ def cmd_ssh(args) -> None:
     """Dispatch ``corvus ssh`` subcommands.
 
     Description:
-        Routes to ``sync``, ``config`` or ``_ensure``. With no subcommand
-        prints a short hint.
+        Routes to setup/sync/list/status/uninstall/config/_ensure.
+        With no subcommand prints a short how-to.
 
     Inputs:
         args: namespace with ``ssh_cmd`` and delegated flags.
@@ -749,11 +1052,24 @@ def cmd_ssh(args) -> None:
         Delegates to sub-handlers; exits on unknown subcommand.
     """
     sub = getattr(args, "ssh_cmd", None)
-    if sub == "sync":
+    if sub in (None, "help"):
+        print(SSH_HELP, end="")
+        sys.exit(0)
+    if sub == "setup":
+        _cmd_setup(args)
+    elif sub == "sync":
         _cmd_sync(args)
+    elif sub == "list":
+        args.dry_run = True
+        _cmd_sync(args)
+    elif sub == "status":
+        _cmd_status(args)
+    elif sub == "uninstall":
+        _cmd_uninstall(args)
     elif sub == "config":
         _cmd_config(args)
     elif sub == "_ensure":
         _cmd_ensure(args)
     else:
-        sys.exit("usage: corvus ssh sync|config|_ensure ... (try --help)")
+        print(SSH_HELP, end="")
+        sys.exit(2)
