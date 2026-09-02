@@ -207,6 +207,35 @@ def _parse_agent_key(key: str) -> tuple[str, str] | None:
     return host, acct
 
 
+def _agent_host_account_from_meta(it: dict) -> tuple[str, str] | None:
+    """Return (hostname, account) from corvus.* metadata if present."""
+    # ponytail: metadata-first discovery; path fallback for pre-migration secrets
+    md = it.get("metadata")
+    if md is None:
+        md = it.get("meta")
+    if isinstance(md, str):
+        try:
+            import json as _j
+
+            md = _j.loads(md)
+        except Exception:
+            return None
+    if not isinstance(md, dict):
+        return None
+    if md.get("corvus.managed-by") != "corvus-agent":
+        return None
+    host = (md.get("corvus.hostname") or "").strip()
+    acct = (md.get("corvus.account") or "").strip()
+    if not host or not acct:
+        return None
+    try:
+        host = _sanitize_host(host)
+        acct = _sanitize_host(acct)
+    except SystemExit:
+        return None
+    return host, acct
+
+
 def _load_host_map() -> dict[str, str]:
     p = _ssh_hosts_map()
     if not p.is_file():
@@ -259,8 +288,8 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
                 alias = _sanitize_host(alias)
             except SystemExit:
                 continue
-            # preserve agent User/HostName if key matches agent layout
-            agent = _parse_agent_key(key)
+            # preserve agent User/HostName if key matches agent layout or metadata
+            agent = _agent_host_account_from_meta(it) or _parse_agent_key(key)
             if agent:
                 hostname, account = agent
                 try:
@@ -273,7 +302,7 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
                     continue
             raw.append({"alias": alias, "aliases": [alias], "file": alias, "key": key, "user": None, "hostname": None, "kind": kind})
             continue
-        agent = _parse_agent_key(key)
+        agent = _agent_host_account_from_meta(it) or _parse_agent_key(key)
         if agent:
             hostname, account = agent
             try:
@@ -583,21 +612,40 @@ def _purge_key_dir(key_dir: Path) -> None:
 def _list_candidates(project: str | None, prefix: str) -> list[dict]:
     data = _proj_api("GET", "/secrets", query={"meta": "1"}, project=project)
     items = (data or {}).get("items") or []  # type: ignore[union-attr]
+    # ponytail: metadata-first for agent SSH; kind=ssh still discovers manual keys at any path
+    def _is_managed_ssh(it: dict) -> bool:
+        md = it.get("metadata")
+        if md is None:
+            md = it.get("meta")
+        if isinstance(md, str):
+            try:
+                import json as _j
+                md = _j.loads(md)
+            except Exception:
+                return False
+        if not isinstance(md, dict) or md.get("corvus.managed-by") != "corvus-agent":
+            return False
+        # password subkey must not surface in ssh sync
+        if (it.get("key") or "").endswith("/password"):
+            return False
+        return (it.get("kind") or "") == "ssh"
+    ssh_kind = [it for it in items if (it.get("kind") or "") == "ssh" and not (it.get("key") or "").endswith("/password")]
+    managed = [it for it in items if _is_managed_ssh(it)]
+    # union preserves order: managed first (has metadata), then any remaining ssh kind
+    seen = set()
+    out: list[dict] = []
+    for it in managed + ssh_kind:
+        ident = it.get("key") or id(it)
+        if ident not in seen:
+            seen.add(ident)
+            out.append(it)
+    if out:
+        return out
     if not prefix:
-        return [it for it in items if (it.get("kind") or "") == "ssh"]
-    # prefix set: include prefix matches + any stray ssh kind (fallback)
-    out = [it for it in items if (it.get("key") or "").startswith(prefix)]
-    if not out:
-        # fallback to ssh kind if no prefix hits
-        ssh_only = [it for it in items if (it.get("kind") or "") == "ssh"]
-        if ssh_only:
-            return ssh_only
-    else:
-        # also include ssh kind outside prefix (covers agent + manual)
-        for it in items:
-            if (it.get("kind") or "") == "ssh" and it not in out:
-                out.append(it)
-    return out
+        return ssh_kind
+    # no ssh kind nor managed -> fallback to prefix matches (covers pre-migration without kind/metadata)
+    pref = [it for it in items if (it.get("key") or "").startswith(prefix)]
+    return pref
 
 
 def _fetch_value(key: str, project: str | None) -> str:
