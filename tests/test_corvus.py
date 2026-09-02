@@ -809,7 +809,7 @@ def test_secret_list_shows_folder_col(ss, capsys):
 
 
 def test_lazy_ssh_fragment_match_host_is_comma_separated(tmp_path):
-    """OpenSSH Match host takes a comma list; spaces become 'Unsupported Match attribute'."""
+    """OpenSSH Match originalhost takes a comma list; spaces become 'Unsupported Match attribute'."""
     import re
     import shutil
     import subprocess
@@ -838,8 +838,9 @@ def test_lazy_ssh_fragment_match_host_is_comma_separated(tmp_path):
         lazy=True,
     )
     text = frag.read_text()
-    assert f"Match host {host},{alias_acct} exec" in text
-    assert f"Match host {host} {alias_acct}" not in text
+    assert f"Match originalhost {host},{alias_acct} exec" in text
+    assert f"Match originalhost {host} {alias_acct}" not in text
+    assert f"Match host {host}" not in text
     assert f"IdentityFile {key_dir / (alias_acct + '.pub')}" in text
     assert "IdentitiesOnly yes" in text
 
@@ -852,6 +853,102 @@ def test_lazy_ssh_fragment_match_host_is_comma_separated(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "Unsupported Match attribute" not in r.stderr
     assert "Bad Match condition" not in r.stderr
+
+
+def test_lazy_ssh_fragment_originalhost_does_not_leak_other_account(tmp_path):
+    """ssh host-test must not pick up host-root's IdentityFile after HostName rewrite."""
+    import re
+    import shutil
+    import subprocess
+
+    from corvus_cli.commands.ssh import _write_fragment
+
+    ssh = shutil.which("ssh")
+    if not ssh:
+        pytest.skip("ssh not available")
+
+    frag = tmp_path / "corvus"
+    key_dir = tmp_path / "keys"
+    host = "openclaw-01ef.syd.sigaint.au"
+    root_file = f"{host}-root"
+    test_file = f"{host}-test"
+    _write_fragment(
+        [
+            {
+                "alias": host,
+                "aliases": [host, root_file],
+                "file": root_file,
+                "key": f"hosts/{host}/users/root/authorized_keys",
+                "user": "root",
+                "hostname": host,
+                "kind": "ssh",
+            },
+            {
+                "alias": test_file,
+                "aliases": [test_file],
+                "file": test_file,
+                "key": f"hosts/{host}/users/test/authorized_keys",
+                "user": "test",
+                "hostname": host,
+                "kind": "ssh",
+            },
+        ],
+        key_dir,
+        frag,
+        "hosts/",
+        lazy=True,
+    )
+    syntax = tmp_path / "syntax"
+    syntax.write_text(re.sub(r'exec ".*"', 'exec "true"', frag.read_text()))
+
+    def identfiles(alias: str) -> list[str]:
+        r = subprocess.run([ssh, "-G", "-F", str(syntax), alias], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return [ln.split(None, 1)[1] for ln in r.stdout.splitlines() if ln.startswith("identityfile ")]
+
+    test_ids = identfiles(test_file)
+    assert str(key_dir / f"{test_file}.pub") in test_ids
+    assert str(key_dir / f"{root_file}.pub") not in test_ids
+
+    root_ids = identfiles(host)
+    assert str(key_dir / f"{root_file}.pub") in root_ids
+    assert str(key_dir / f"{test_file}.pub") not in root_ids
+
+
+def test_lazy_ssh_fragment_exec_uses_this_corvus(tmp_path, monkeypatch):
+    """Match exec must call the generating binary, not whatever `corvus` is first on PATH."""
+    import sys
+
+    from corvus_cli.commands.ssh import _write_fragment
+
+    fake = tmp_path / "bin" / "corvus"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(sys, "argv", [str(fake), "ssh", "sync"])
+
+    frag = tmp_path / "corvus"
+    key_dir = tmp_path / "keys"
+    _write_fragment(
+        [
+            {
+                "alias": "web01",
+                "aliases": ["web01"],
+                "file": "web01-deploy",
+                "key": "hosts/web01/users/deploy/authorized_keys",
+                "user": "deploy",
+                "hostname": "web01",
+                "kind": "ssh",
+            }
+        ],
+        key_dir,
+        frag,
+        "hosts/",
+        lazy=True,
+    )
+    text = frag.read_text()
+    assert f'exec "{fake.resolve()} ssh _ensure web01 --key-dir {key_dir}"' in text
+    assert 'exec "corvus ssh _ensure' not in text
 
 
 def _ed25519_pair(dir_path: Path) -> tuple[str, str]:
@@ -1023,7 +1120,7 @@ def test_ssh_sync_lazy_does_not_fetch_values(ss, tmp_path, capsys):
     text = frag.read_text()
     assert "web01-deploy.pub" in text
     assert "IdentitiesOnly yes" in text
-    assert "Match host" in text
+    assert "Match originalhost" in text
 
 
 def test_ssh_no_args_prints_howto(ss, capsys):
@@ -1069,7 +1166,7 @@ def test_ssh_setup_wires_include_and_fragment(ss, tmp_path, capsys):
         )
     assert "Include" in ssh_config.read_text()
     assert frag.is_file()
-    assert "Match host" in frag.read_text()
+    assert "Match originalhost" in frag.read_text()
     out = capsys.readouterr()
     assert "web01" in out.out
     assert "ssh web01" in out.err
