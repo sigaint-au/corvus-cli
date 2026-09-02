@@ -806,3 +806,47 @@ def test_secret_list_shows_folder_col(ss, capsys):
     out = capsys.readouterr().out
     assert "FOLDER" in out
     assert "ops/prod" in out
+
+
+def test_lazy_ssh_fragment_match_host_is_comma_separated(tmp_path):
+    """OpenSSH Match host takes a comma list; spaces become 'Unsupported Match attribute'."""
+    import re
+    import shutil
+    import subprocess
+
+    from corvus_cli.commands.ssh import _write_fragment
+
+    frag = tmp_path / "corvus"
+    key_dir = tmp_path / "keys"
+    host = "openclaw-01ef.syd.sigaint.au"
+    alias_acct = f"{host}-root"
+    _write_fragment(
+        [
+            {
+                "alias": host,
+                "aliases": [host, alias_acct],
+                "file": alias_acct,
+                "key": f"hosts/{host}/users/root/authorized_keys",
+                "user": "root",
+                "hostname": host,
+                "kind": "ssh",
+            }
+        ],
+        key_dir,
+        frag,
+        "hosts/",
+        lazy=True,
+    )
+    text = frag.read_text()
+    assert f"Match host {host},{alias_acct} exec" in text
+    assert f"Match host {host} {alias_acct}" not in text
+
+    ssh = shutil.which("ssh")
+    if not ssh:
+        return
+    syntax = tmp_path / "syntax"
+    syntax.write_text(re.sub(r'exec ".*"', 'exec "true"', text))
+    r = subprocess.run([ssh, "-G", "-F", str(syntax), host], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "Unsupported Match attribute" not in r.stderr
+    assert "Bad Match condition" not in r.stderr

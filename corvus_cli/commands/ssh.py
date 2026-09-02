@@ -370,10 +370,12 @@ def _write_fragment(entries: list[dict], key_dir: Path, frag: Path, prefix: str,
         aliases = e.get("aliases") or [e["alias"]]
         if lazy:
             # JIT: ssh triggers corvus ssh _ensure on first use; keys live in tmpfs until TTL
-            host_line = " ".join(aliases)
+            # Match host takes a comma-separated pattern list (Host uses spaces).
+            # A space after the first alias is parsed as the next Match attribute.
+            host_pat = ",".join(aliases)
             ensure = f'corvus ssh _ensure {e["alias"]} --key-dir {key_dir} --ttl {DEFAULT_TTL}'
             # quote key_dir if it contains spaces
-            lines.append(f'Match host {host_line} exec "{ensure}"')
+            lines.append(f'Match host {host_pat} exec "{ensure}"')
             hostname = e.get("hostname")
             if hostname and any(a != hostname for a in aliases):
                 lines.append(f"  HostName {hostname}")
