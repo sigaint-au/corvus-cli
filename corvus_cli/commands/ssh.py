@@ -95,14 +95,19 @@ def _sanitize_host(host: str) -> str:
 def _parse_agent_key(key: str) -> tuple[str, str] | None:
     """Return (hostname, account) if *key* matches agent SSH layout.
 
-    Supports new ``hosts/<host>/users/<acct>/ssh`` (``_ssh_account_key``)
-    and legacy ``hosts/<host>/users/<acct>`` (backward compat). The companion
-    ``.../password`` (``_account_key``) is not SSH.
+    Supports ``hosts/<host>/users/<acct>/authorized_keys`` (``_ssh_account_key``)
+    and legacy ``hosts/<host>/users/<acct>`` / ``.../ssh`` (backward compat).
+    The companion ``.../password`` (``_account_key``) is not SSH.
     """
-    # ponytail: new agent splits account into /ssh (ssh) and /password (plain); only /ssh is SSH
+    # ponytail: agent splits account into /authorized_keys (ssh) and /password (plain); only /authorized_keys is SSH
     if key.endswith("/password"):
         return None
-    base = key[:-4] if key.endswith("/ssh") else key
+    if key.endswith("/authorized_keys"):
+        base = key[:-16]
+    elif key.endswith("/ssh"):
+        base = key[:-4]
+    else:
+        base = key
     if "/users/" not in base:
         return None
     # split on the last /users/ to handle prefix containing same string unlikely
@@ -213,7 +218,7 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
             continue
         raw.append({"alias": alias_norm, "aliases": [alias_norm], "file": alias_norm, "key": key, "user": None, "hostname": None, "kind": kind})
 
-    # ponytail: dedup legacy hosts/<h>/users/<a> vs new hosts/<h>/users/<a>/ssh -> prefer /ssh
+    # ponytail: dedup legacy hosts/<h>/users/<a> vs new hosts/<h>/users/<a>/authorized_keys -> prefer /authorized_keys
     seen_agent_keys: dict[tuple[str, str], dict] = {}
     deduped: list[dict] = []
     for e in raw:
@@ -224,9 +229,15 @@ def _derive_entries(candidates: list[dict], prefix: str, host_map: dict[str, str
                 seen_agent_keys[k] = e
                 deduped.append(e)
             else:
-                cur_is_ssh = e["key"].endswith("/ssh")
-                prev_is_ssh = prev["key"].endswith("/ssh")
-                if cur_is_ssh and not prev_is_ssh:
+                cur_is_ak = e["key"].endswith("/authorized_keys")
+                prev_is_ak = prev["key"].endswith("/authorized_keys")
+                cur_is_ssh = e["key"].endswith("/ssh") or cur_is_ak
+                prev_is_ssh = prev["key"].endswith("/ssh") or prev_is_ak
+                if cur_is_ak and not prev_is_ak:
+                    idx = deduped.index(prev)
+                    deduped[idx] = e
+                    seen_agent_keys[k] = e
+                elif cur_is_ssh and not prev_is_ssh:
                     idx = deduped.index(prev)
                     deduped[idx] = e
                     seen_agent_keys[k] = e
