@@ -87,56 +87,59 @@ corvus {VERSION} - command-line client for Corvus
 Quick start:
 
     corvus login --url https://secrets.example --token ss_… --project <uuid>
-    corvus get secrets
-    corvus get secret API_KEY -o value
-    printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
+    corvus secret list
+    corvus secret get API_KEY -o value
+    printf '%s' "$NEW" | corvus secret set API_KEY --from-file=-
 
 Usage:
-    corvus <command> [resource] [name] [flags]
+    corvus <noun> <verb> [name] [flags]
+    (verb-first aliases still work: `get secret`, `apply secret`, …)
 
 Tokens:
     ss_…   machine token: one project, secrets only (UUID)
     pat_…  personal access token: secrets + teams/projects/admin (name or UUID)
     sso_…  CLI session token: user-scoped, short-lived (name or UUID)
 
-Commands
+Commands (noun verb; KEY/VALUE columns never truncate; tables use color on TTY)
   Secrets
-    get secrets [ -l QUERY ]          list metadata for the current project
-    get secret KEY [ -o value|json ]  read a secret
-    apply|set secret KEY …            create/update a secret (prefer --from-file or --from-env)
-    delete secret KEY                 soft-delete a secret (to trash)
-    reveal secret KEY [ --reason … ]  request reveal approval (or print when allowed)
-    approve|deny REQ [ --minutes N ]  resolve a pending reveal request (admin)
-    export [ PROJECT ] [ -o env|json|csv ]   dump plaintext secrets (audited, needs --yes)
+    secret list [ -l QUERY ]          list metadata for the current project
+    secret get KEY [ -o value|json ]  read a secret
+    secret set KEY …                  create/update a secret (prefer --from-file or --from-env)
+    secret delete KEY                 soft-delete a secret (to trash)
+    secret reveal KEY [ --reason … ]  request reveal approval (or print when allowed)
+    secret history KEY                version history of a secret
+    secret export [ -o env|json|csv ] dump plaintext secrets (audited, needs --yes)
+    request list                      list reveal access requests
+    request approve|deny REQ [ --minutes N ]  resolve a pending request (admin)
 
   Access & metadata
-    grant secret KEY --to EMAIL|--group ID|--sa ID --role R    secret role binding
-    unbind secret KEY BINDING_ID                               remove a binding
-    settings [ --require-reveal-approval on ]                  project settings
+    binding grant KEY --to EMAIL|--group ID|--sa ID --role R    secret role binding
+    binding revoke KEY BINDING_ID                               remove a binding
+    settings [ --require-reveal-approval on ]                   project settings
 
   Projects
-    project [ NAME ]                  show or switch default project
-    get projects                      list projects (PAT)
-    get project NAME | create|delete project NAME --team TEAM
+    project [ NAME ] | project use NAME   show or switch default project
+    project list                           list projects (PAT)
+    project get|create|delete NAME [--team TEAM]
 
   Teams, members, groups
-    get teams | team NAME | create|delete team NAME
-    get members [ --team TEAM ] | create|delete member EMAIL [ --role R ]
-    transfer team NAME --email USER   change team ownership
-    get groups --team TEAM | create|delete group NAME --team TEAM
-    create|delete group-member EMAIL --team TEAM --group GROUP
+    team list | team get NAME | team create|delete NAME
+    member list [ --team TEAM ] | member add|remove EMAIL [ --role R ]
+    team transfer NAME --to USER       change team ownership
+    group list --team TEAM | group create|delete NAME --team TEAM
+    group member add|remove EMAIL --team TEAM --group GROUP
 
   Tokens & trash
-    get tokens                        list machine tokens (shows key scope)
-    create token NAME --role service-write [ --scope 'K1,prod/*' ]
-    delete token ID
-    get trash | restore trash ID | delete trash ID
-    restore trash --all | delete trash --all          # bulk restore / purge
+    token list                         list machine tokens (shows key scope)
+    token create NAME --role service-write [ --scope 'K1,prod/*' ]
+    token delete ID
+    trash list | trash restore ID | trash purge ID
+    trash restore --all | trash purge --all          # bulk restore / purge
 
   Folders
-    get folders                        list folders for current project
-    create folder PATH                 create a folder (e.g. 'ops/prod')
-    delete folder ID                   delete an empty folder (use from list)
+    folder list                        list folders for current project
+    folder create PATH                 create a folder (e.g. 'ops/prod')
+    folder delete ID                   delete an empty folder (use from list)
 
   SSH hosts (native ssh <host>)
     ssh setup                         once: wire ~/.ssh/config + discover hosts
@@ -144,9 +147,7 @@ Commands
     ssh uninstall [--purge]           remove Include (and keys with --purge)
 
   Admin (global)
-    get users [ -l QUERY ] | get audit [ --source project|org|secret|access ]
-    get history KEY                   version history of a secret
-    get requests                      list reveal access requests
+    user list [ -l QUERY ] | audit list [ --source project|org|secret|access ]
     help                              this summary
 
   Completion
@@ -168,7 +169,7 @@ Credentials:  use env SS_URL / SS_TOKEN / SS_PROJECT, or run
 _COMPLETION_SH: dict[str, str] = {
     "bash": r"""# corvus bash completion - source or drop in /etc/bash_completion.d/corvus
 _corvus_completions() {
-  local cur="${COMP_WORDS[COMP_CWORD]}" cmds="login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion"
+  local cur="${COMP_WORDS[COMP_CWORD]}" cmds="login project secret folder request binding team member group token trash user audit get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion"
   local resources="secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user"
   local ssh_sub="setup list status sync uninstall"
   if [[ $COMP_CWORD -eq 1 ]]; then COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return; fi
@@ -183,7 +184,7 @@ complete -F _corvus_completions corvus
     "zsh": r"""#compdef corvus
 # corvus zsh completion - put in $fpath as _corvus
 _corvus() {
-  local -a cmds=(login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion)
+  local -a cmds=(login project secret folder request binding team member group token trash user audit get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion)
   local -a res=(secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user)
   local -a ssh_sub=(setup list status sync uninstall)
   if (( CURRENT == 2 )); then _describe 'command' cmds
@@ -194,7 +195,7 @@ compdef _corvus corvus
 """,
     "fish": r"""# corvus fish completion - put in ~/.config/fish/completions/corvus.fish
 complete -c corvus -n '__fish_seen_subcommand_from get create delete apply set restore grant' -a 'secrets secret projects project teams team members member tokens token groups group group-member trash folders folder history requests audit users user'
-complete -c corvus -n 'not __fish_seen_subcommand_from login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion' -a 'login project get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion'
+complete -c corvus -n 'not __fish_seen_subcommand_from login project secret folder request binding team member group token trash user audit get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion' -a 'login project secret folder request binding team member group token trash user audit get create delete apply set reveal approve deny restore transfer grant unbind export settings ssh help completion'
 complete -c corvus -n '__fish_seen_subcommand_from ssh' -a 'setup list status sync uninstall'
 """,
 }

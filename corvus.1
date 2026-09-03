@@ -3,8 +3,8 @@
 corvus \- command-line client for Corvus
 .SH SYNOPSIS
 .B corvus
-.I <command>
-.RI [ resource ]
+.I <noun>
+.I <verb>
 .RI [ name ]
 .I [flags]
 .br
@@ -59,48 +59,70 @@ tokens.
 Show the current default project, or switch to
 .IR NAME
 (name for a PAT or CLI session token, UUID for a machine token).
+.B project use NAME
+is the same switch in noun form; verbs
+.BR list | get | create | delete
+also work after
+.BR project .
+Verb-first aliases
+.RB ( get ", " apply ", " create ", ...)"
+still work; see NOUNS below.
 .TP
-.BI "get " RESOURCE " [name]"
-List or fetch a resource. See the RESOURCES section for valid values.
+.BI "secret " "list|get|set|delete|reveal|history|export"
+Operate on secrets. For example
+.B "secret list"
+(list metadata),
+.B "secret get KEY"
+(read),
+.B "secret set KEY"
+(create/update: value, note, kind, expiry, metadata, access mode).
 .TP
-.BI "apply, set " "secret NAME [flags]"
-Create or update a secret (value, note, kind, expiry, metadata, access mode).
+.BI "request " "list|approve|deny"
+.RI [ \-\-minutes N ]
+List or resolve pending reveal access requests. Allowed grant durations:
+15, 60, 240, 1440 minutes.
 .TP
-.BI "create " RESOURCE
-.RI NAME " [flags]"
-Create a team, project, member, group, group-member, token, or secret.
+.BI "binding " "grant|revoke"
+.RB KEY " [ " \-\-to EMAIL | \-\-group ID | \-\-sa TOKEN_ID ]
+.RB [ \-\-role ROLE ]
+Add
+.RB ( grant )
+or remove
+.RB ( revoke )
+a secret-scope role binding (project admin).
 .TP
-.BI "delete " RESOURCE
-.RI NAME " [flags]"
-Delete a resource. Deleting a team, project, or trashed secret (purge)
-requires
+.BI "team|member|group|token " "VERB ..."
+Team, member, group, and token management. Verbs:
+.B team list|get|create|delete|transfer
+.RB ( transfer " takes " \-\-to USER ),
+.B member list|add|remove ,
+.B "group list|create|delete"
+and
+.B "group member add|remove" ,
+.B token list|create|delete .
+.TP
+.BI "trash " "list|restore|purge"
+List, restore, or permanently purge soft-deleted secrets. Restore and purge
+accept an ID or
+.BR \-\-all .
+Purging requires
 .BR \-\-yes .
 .TP
-.BI "reveal " "secret NAME [--reason TEXT]"
-Request reveal approval (or print the value with
-.BR \-o\ value ).
+.BI "folder " "list|create|delete"
+List, create (by PATH), or delete (by ID) folders.
 .TP
-.BI "approve|deny " ID
-.RI [ \-\-minutes N ]
-Resolve a pending reveal access request. Allowed grant durations: 15, 60,
-240, 1440 minutes.
+.BI "project " "list|get|create|delete|use"
+List, show, create, or delete projects, or switch the default
+.RB ( use ).
 .TP
-.BI "restore trash " ID |"
-.B restore trash --all
-Restore one soft-deleted secret, or all.
+.BI "user " "list|get"
+List users or show one (global admin, PAT or CLI session token).
 .TP
-.BI "transfer team " NAME " --email " USER
-Transfer team ownership to USER .
+.BI "audit " list
+.RB [ \-\-source project|org|secret|access ]
+Show secret or org audit.
 .TP
-.BI "grant secret " NAME
-.RB [ \-\-to EMAIL | \-\-group ID | \-\-sa TOKEN_ID ]
-.RB [ \-\-role ROLETH ]
-Add a secret-scope role binding (project admin).
-.TP
-.BI "unbind secret " NAME " " BINDING_ID
-Remove a secret-scope role binding.
-.TP
-.BI "export " [ PROJECT ]
+.BI "secret export " [ PROJECT ]
 .RB [ \-o\ env|json|csv|value|table ]
 Export project secrets as plaintext (audited).
 .TP
@@ -119,62 +141,50 @@ to Corvus hosts. Requires
 See
 .BR SSH
 below.
-.SH RESOURCES
-The
-.BR get
-command accepts these resources:
+.SH NOUNS
+Canonical form is noun-first; the old verb-first spelling still works:
 .TP
-.BR secrets
+.BR "secret list" ", get secrets"
 List secret metadata for the current project.
 .TP
-.BR secret
-\fINAME\fR
+.BR "secret get KEY" ", get secret KEY"
 Fetch a single secret by key (path-style keys with / are allowed).
 .TP
-.BR projects |, \fBproject \fINAME
+.BR "project list|get" ", get projects|project"
 List projects, or show one.
 .TP
-.BR teams | team
-.RB [ NAME ]
+.BR "team list|get" ", get teams|team"
 List teams, or show one.
 .TP
-.BR members | member
+.BR "member list" ", get members"
 List current project members, or with
 .B \-\-team T
 team members.
 .TP
-.BR tokens | token
-List machine tokens for the current project.
+.BR "token list|create|delete" ", get|create|delete token(s)"
+Machine tokens for the current project.
 .TP
-.BR groups
+.BR "group list" ", get groups"
 with
 .B \-\-team T
 list groups of a team.
 .TP
-.BR trash
-List soft-deleted secrets.
+.BR "trash list|restore|purge" ", get|restore|delete trash"
+List, restore, or purge soft-deleted secrets.
 .TP
-.BR history
-\fBNAME\fR
+.BR "secret history KEY" ", get history KEY"
 Show version history of a secret.
 .TP
-.BR requests
-List access requests
-.RB ( --status pending|approved|denied|all ).
+.BR "request list|approve|deny" ", get requests|approve|deny"
+Access requests
+.RB ( list " takes " --status pending|approved|denied|all ).
 .TP
-.BR audit
+.BR "audit list" ", get audit"
 .RB [ \-\-source project|org|secret|access ]
 Show secret or org audit.
 .TP
-.BR users
+.BR "user list|get" ", get users|user"
 List users (global admin, PAT or CLI session token).
-.PP
-The
-.BR create
-and
-.BR delete
-commands accept: team, project, member, group, group-member, token, trash,
-and secret.
 .SH OPTIONS
 Most subcommands accept a subset of the following:
 .TP
@@ -263,29 +273,29 @@ Generated OpenSSH Include fragment
 .SH EXAMPLES
 .TP
 List secrets:
-.B corvus get secrets
+.B corvus secret list
 .TP
 Get one secret as a raw value:
-.B corvus get secret API_KEY \-o value
+.B corvus secret get API_KEY \-o value
 .TP
 History-safe write from stdin:
-.B printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
+.B printf '%s' "$NEW" | corvus secret set API_KEY --from-file=-
 .TP
 Create a team and project:
-.B corvus create team Platform
+.B corvus team create Platform
 .br
-.B corvus create project demo --team Platform
+.B corvus project create demo --team Platform
 .TP
 Create a write token scoped to two keys:
-.B corvus create token ci --role service-write --scope 'API_KEY,prod/*'
+.B corvus token create ci --role service-write --scope 'API_KEY,prod/*'
 .TP
 Restrict a secret and grant a user:
-.B corvus apply secret API_KEY --access-mode restricted
+.B corvus secret set API_KEY --access-mode restricted
 .br
-.B corvus grant secret API_KEY --to alice@example.com --role secret-reveal
+.B corvus binding grant API_KEY --to alice@example.com --role secret-reveal
 .TP
 Export secrets:
-.B corvus export --output env
+.B corvus secret export --output env
 .TP
 SSH hosts (requires ssh-agent):
 .B corvus ssh setup

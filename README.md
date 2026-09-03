@@ -9,12 +9,12 @@ Command-line client for [Corvus](https://git.sigaint.au/Sigaint/corvus). It talk
 
 ```
 corvus login --url https://secrets.example.com --token pat_… --project ios-app
-corvus get secrets
-corvus get secret API_KEY -o value
-printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
+corvus secret list
+corvus secret get API_KEY -o value
+printf '%s' "$NEW" | corvus secret set API_KEY --from-file=-
 ```
 
-`corvus` or `corvus --help` prints usage. `corvus --version` prints the version. `man corvus` has the full reference.
+`corvus` or `corvus --help` prints usage. `corvus --version` prints the version. `man corvus` has the full reference. Commands are noun-first (`corvus secret list`); verb-first aliases (`corvus get secrets`, `corvus apply secret`, …) still work.
 
 ---
 
@@ -76,13 +76,13 @@ Version comes from `pyproject.toml`.
 ```bash
 # Machine token (one project, secrets only)
 corvus login --url https://secrets.example.com --token ss_… --project 31a70875-7d6a-40a7-a315-751f8a7ee38f
-corvus get secrets
-corvus get secret API_KEY -o value
+corvus secret list
+corvus secret get API_KEY -o value
 
 # PAT / sso session (human, all teams/projects, name resolution)
 corvus login --url https://secrets.example.com --token pat_…
-corvus project ios-app
-corvus get secrets -l platform-team -o json
+corvus project use ios-app
+corvus secret list -l platform-team -o json
 
 # Web UI "Copy login command" paste
 corvus login --url https://secrets.example.com --token sso_…
@@ -91,7 +91,7 @@ corvus login --url https://secrets.example.com --token sso_…
 export SS_URL=https://secrets.example.com
 export SS_TOKEN=ss_…    # never commit
 export SS_PROJECT=31a70875-7d6a-40a7-a315-751f8a7ee38f
-corvus get secrets
+corvus secret list
 ```
 
 `configure` is an alias for `login`.
@@ -126,14 +126,16 @@ Env vars override `~/.config/corvus/config`. If you set `SS_PROJECT` or `PID` in
 ## CLI usage
 
 ```text
-corvus <command> [resource] [name] [flags]
+corvus <noun> <verb> [name] [flags]
 ```
+
+Verb-first forms (`get secrets`, `apply secret`, `create team`, …) still work as aliases.
 
 ### Project
 
 ```bash
 corvus project              # show current (resolves UUID to name for PAT)
-corvus project ios-app      # switch (PAT resolves name to UUID; machine needs UUID)
+corvus project use ios-app  # switch (PAT resolves name to UUID; machine needs UUID)
 ```
 
 ```
@@ -147,15 +149,17 @@ Unset `SS_PROJECT`/`PID` after switch or env will still override the file.
 ### Secrets: list and get
 
 ```bash
-corvus get secrets
-corvus get secrets -l api -o json
-corvus get secrets --no-trunc          # disable 48-char truncation
-corvus get secrets --limit 50 --page-size 20   # pagination controls
-corvus get secrets --no-paginate       # first page only (disable auto-pagination)
-corvus get secret API_KEY
-corvus get secret API_KEY -o value     # for scripts
-corvus get secret prod/db/password -o value
+corvus secret list
+corvus secret list -l api -o json
+corvus secret list --no-trunc          # disable 48-char truncation (notes etc.)
+corvus secret list --limit 50 --page-size 20   # pagination controls
+corvus secret list --no-paginate       # first page only (disable auto-pagination)
+corvus secret get API_KEY
+corvus secret get API_KEY -o value     # for scripts
+corvus secret get prod/db/password -o value
 ```
+
+KEY and VALUE columns never truncate, so long keys and ssh private keys render in full. Tables use color (bold headers) on a TTY; pipe-safe plain text otherwise. `NO_COLOR=1` disables color.
 
 `-l` is forwarded as `q=` and matches key, note, and custom metadata.
 
@@ -188,41 +192,41 @@ Bulk listing returns metadata only, never values. The CLI supports hierarchical 
 Machine tokens (`ss_…`) skip ACL and approval checks.
 
 ```bash
-corvus reveal secret API_KEY --reason "debugging prod auth #1234"
-corvus get requests
-corvus approve <request-id> --minutes 60   # 15/60/240/1440 only
-corvus get secret API_KEY -o value
+corvus secret reveal API_KEY --reason "debugging prod auth #1234"
+corvus request list
+corvus request approve <request-id> --minutes 60   # 15/60/240/1440 only
+corvus secret get API_KEY -o value
 ```
 
 ### Create / update
 
 ```bash
 # History-safe (preferred)
-printf '%s' "$NEW" | corvus apply secret API_KEY --from-file=-
-corvus apply secret API_KEY --from-env=NEW_API_KEY
-corvus apply secret API_KEY --from-file=./api.key --note 'rotated in CI'
+printf '%s' "$NEW" | corvus secret set API_KEY --from-file=-
+corvus secret set API_KEY --from-env=NEW_API_KEY
+corvus secret set API_KEY --from-file=./api.key --note 'rotated in CI'
 
 # Expiry / kind
-corvus apply secret API_KEY --kind plain --expires-days 90 --from-env=V
-corvus apply secret API_KEY --clear-expires --note 'no expiry'
+corvus secret set API_KEY --kind plain --expires-days 90 --from-env=V
+corvus secret set API_KEY --clear-expires --note 'no expiry'
 
 # Metadata (PAT only)
-corvus apply secret API_KEY --meta owner=platform-team --meta env=prod
-corvus apply secret API_KEY --delete-meta env
+corvus secret set API_KEY --meta owner=platform-team --meta env=prod
+corvus secret set API_KEY --delete-meta env
 
 # Access (PAT, project admin)
-corvus apply secret API_KEY --access-mode restricted --requires-approval on
+corvus secret set API_KEY --access-mode restricted --requires-approval on
 
 # Avoid in interactive shells (lands in history):
-# corvus apply secret API_KEY --value 'literal'
+# corvus secret set API_KEY --value 'literal'
 ```
 
-Aliases: `create secret` and `set secret` both run `apply secret`. Success tables omit the value. `--expires-days` must be a positive integer.
+Aliases: `apply secret`, `create secret`, and `set secret` all run `secret set`. Success tables omit the value. `--expires-days` must be a positive integer.
 
 ### Delete
 
 ```bash
-corvus delete secret API_KEY   # soft-delete to trash
+corvus secret delete API_KEY   # soft-delete to trash
 ```
 
 ### SSH hosts (native `ssh <host>`)
@@ -330,37 +334,37 @@ ssh web01
 ### Folders
 
 ```bash
-corvus get folders
-corvus create folder ops/prod
-corvus delete folder <folder-id>
-corvus get secrets             # shows FOLDER column when any secret has folder_path
+corvus folder list
+corvus folder create ops/prod
+corvus folder delete <folder-id>
+corvus secret list             # shows FOLDER column when any secret has folder_path
 ```
 
 ### Teams, members, groups
 
 ```bash
-corvus get teams
-corvus create team NewTeam
-corvus delete team NewTeam --yes
+corvus team list
+corvus team create NewTeam
+corvus team delete NewTeam --yes
 
-corvus get team Platform
-corvus get members --team Platform
-corvus create member alice@example.com --team Platform --role team-admin
-corvus delete member alice@example.com --team Platform
+corvus team get Platform
+corvus member list --team Platform
+corvus member add alice@example.com --team Platform --role team-admin
+corvus member remove alice@example.com --team Platform
 
-corvus get groups --team Platform
-corvus create group admins --team Platform
-corvus create group-member alice@example.com --team Platform --group admins
-corvus delete group-member alice@example.com --team Platform --group admins
+corvus group list --team Platform
+corvus group create admins --team Platform
+corvus group member add alice@example.com --team Platform --group admins
+corvus group member remove alice@example.com --team Platform --group admins
 
-corvus get projects
-corvus get project ios-app
-corvus create project demo --team Platform
-corvus delete project demo --yes
+corvus project list
+corvus project get ios-app
+corvus project create demo --team Platform
+corvus project delete demo --yes
 
-corvus get members                        # current project
-corvus get members --project other-app    # override without switching
-corvus create member bob@example.com --role project-write
+corvus member list                        # current project
+corvus member list --project other-app    # override without switching
+corvus member add bob@example.com --role project-write
 ```
 
 Roles: `team-viewer` / `team-member` / `team-admin` / `team-owner`; `project-read` / `project-write` / `project-reveal` / `project-admin`; `service-read` / `service-reveal` / `service-write`.
@@ -368,11 +372,11 @@ Roles: `team-viewer` / `team-member` / `team-admin` / `team-owner`; `project-rea
 ### Machine tokens (PAT, current project)
 
 ```bash
-corvus get tokens                              # shows SCOPE
-corvus create token ci --role service-write
-corvus create token ci --role service-reveal --scope 'API_KEY,prod/*' --expires-days 90
+corvus token list                              # shows SCOPE
+corvus token create ci --role service-write
+corvus token create ci --role service-reveal --scope 'API_KEY,prod/*' --expires-days 90
 # token (copy now): ss_… scope=API_KEY,prod/*   (printed to stderr once)
-corvus delete token <token-uuid>
+corvus token delete <token-uuid>
 ```
 
 If you omit `--expires-days`, the CLI warns that the token will not expire.
@@ -380,34 +384,34 @@ If you omit `--expires-days`, the CLI warns that the token will not expire.
 ### Secret bindings and project settings (PAT, project admin)
 
 ```bash
-corvus grant secret API_KEY --to alice@example.com --role secret-reveal
-corvus grant secret API_KEY --group <group-id> --role secret-read
-corvus unbind secret API_KEY <binding-id>
+corvus binding grant API_KEY --to alice@example.com --role secret-reveal
+corvus binding grant API_KEY --group <group-id> --role secret-read
+corvus binding revoke API_KEY <binding-id>
 corvus settings --require-reveal-approval on --default-access-mode restricted
 ```
 
 ### Export and trash (PAT)
 
 ```bash
-corvus export -o env --yes > .env          # --yes required (audited), auto-paginated
-corvus export -o json --yes --limit 100
-corvus get trash
-corvus restore trash <secret-uuid>
-corvus delete trash <secret-uuid> --yes    # permanent purge
-corvus restore trash --all
-corvus delete trash --all --yes
+corvus secret export -o env --yes > .env          # --yes required (audited), auto-paginated
+corvus secret export -o json --yes --limit 100
+corvus trash list
+corvus trash restore <secret-uuid>
+corvus trash purge <secret-uuid> --yes    # permanent purge
+corvus trash restore --all
+corvus trash purge --all --yes
 ```
 
-`export` warns with the count. All list endpoints auto-paginate across cursor/`page_token`/`Link: rel="next"`/`has_more`+`page`/`offset`/`total` styles. Caps `SS_MAX_PAGES` (100) and `SS_MAX_ITEMS` (50000) and loop detection stop runaway loops.
+`secret export` warns with the count. All list endpoints auto-paginate across cursor/`page_token`/`Link: rel="next"`/`has_more`+`page`/`offset`/`total` styles. Caps `SS_MAX_PAGES` (100) and `SS_MAX_ITEMS` (50000) and loop detection stop runaway loops.
 
 ### Audit and users (global admin PAT)
 
 ```bash
-corvus get users -l alice
-corvus get audit                            # project audit
-corvus get audit --source org               # org / secret / access (admin)
-corvus get history API_KEY
-corvus transfer team Platform --email new-owner@example.com
+corvus user list -l alice
+corvus audit list                            # project audit
+corvus audit list --source org               # org / secret / access (admin)
+corvus secret history API_KEY
+corvus team transfer Platform --to new-owner@example.com
 ```
 
 ### Output
@@ -420,7 +424,7 @@ corvus transfer team Platform --email new-owner@example.com
 | `name` | Key/name/id only |
 | `wide` | Alias for `table` |
 
-Global flags: `--no-trunc` disables 48-char cell truncation (for example `corvus get secrets --no-trunc`); `--no-paginate`, `--limit N`, `--page-size N` control auto-pagination on all `get` and `export` list endpoints (with `SS_PAGE_SIZE`/`SS_MAX_PAGES`/`SS_MAX_ITEMS` env overrides). Truncation still escapes newlines.
+Global flags: `--no-trunc` disables 48-char cell truncation (for example `corvus secret list --no-trunc`); `--no-paginate`, `--limit N`, `--page-size N` control auto-pagination on all list and export endpoints (with `SS_PAGE_SIZE`/`SS_MAX_PAGES`/`SS_MAX_ITEMS` env overrides). KEY/VALUE columns never truncate. Truncation still escapes newlines.
 
 Typo helper: `unknown resource 'secrets': did you mean 'secrets'?` for close matches.
 
@@ -559,9 +563,9 @@ corvus_cli/
   constants.py      # env names, paths, regexes, role tuples, USAGE, completions
   config.py         # creds, atomic 0600 writes, URL/timeout/role validation, helpers
   api.py            # _http / _api / _proj_api / _mgmt_api / _mgmt_proj_api / _admin_api
-  output.py         # print_table / print_json / trunc / emit plus pagination warnings
+  output.py         # print_table / print_json / trunc / emit, color, never-truncate KEY/VALUE
   parser.py         # argparse wiring, --no-trunc, --expires-days, completion
-  cli.py            # main() dispatcher
+  cli.py            # main() dispatcher + noun-first argv translation (_NOUN_MAP)
   commands/
     auth.py         # login / project
     secrets.py      # apply (secret)
@@ -584,20 +588,20 @@ Every public function has a docstring with Description, Inputs, Outputs, and Exa
 |------|---------|
 | Usage | `corvus` |
 | Login | `corvus login --url … --token … [--project …]` |
-| Switch project | `corvus project [name\|uuid]` |
-| List / get secrets | `get secrets` / `get secret KEY` |
-| Script value | `get secret KEY -o value` |
-| Apply secret | `apply secret KEY --from-env=V` |
-| Teams / projects | `get teams` / `create project N --team T` |
-| Members | `create member email --team T --role team-member` |
-| Tokens | `create token NAME --role service-write [--scope 'K1,prod/*'] [--expires-days 90]` |
-| Bindings | `grant secret K --to EMAIL` / `unbind secret K <binding>` |
+| Switch project | `corvus project use [name\|uuid]` |
+| List / get secrets | `secret list` / `secret get KEY` |
+| Script value | `secret get KEY -o value` |
+| Apply secret | `secret set KEY --from-env=V` |
+| Teams / projects | `team list` / `project create N --team T` |
+| Members | `member add email --team T --role team-member` |
+| Tokens | `token create NAME --role service-write [--scope 'K1,prod/*'] [--expires-days 90]` |
+| Bindings | `binding grant K --to EMAIL` / `binding revoke K <binding>` |
 | Settings | `settings --require-reveal-approval on` |
-| Export | `export -o env --yes` |
-| Groups | `get groups --team T` / `create group NAME --team T` |
-| Trash | `get trash` / `restore trash ID` |
+| Export | `secret export -o env --yes` |
+| Groups | `group list --team T` / `group create NAME --team T` |
+| Trash | `trash list` / `trash restore ID` |
 | SSH hosts | `ssh setup` / `ssh list` / `ssh status` / `ssh uninstall [--purge]` (needs ssh-agent; Fedora/RHEL: `openssh-clients`) |
-| Admin | `get users` / `get audit --source access` |
+| Admin | `user list` / `audit list --source access` |
 | Completion | `completion bash\|zsh\|fish` |
 
 ---
@@ -625,7 +629,7 @@ Server API: `corvus` repo, `docs/dev/api.md` (secret CRUD on `/eso/v1`, org and 
 | `refusing http://` | Non-localhost HTTP | Use `https://` |
 | `token must start with ss_…` | Bad prefix | Check copy, no trailing newline |
 | `machine tokens require project UUID` | Name given to `ss_…` | Use UUID |
-| `export … --yes` | Gate | `corvus export -o env --yes` |
+| `export … --yes` | Gate | `corvus secret export -o env --yes` |
 | `warning: … truncated` | Server paginated | Narrow with `-l` / `q=` |
 
 ---

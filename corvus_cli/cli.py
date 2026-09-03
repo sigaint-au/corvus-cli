@@ -34,6 +34,79 @@ from corvus_cli.parser import build_parser
 # in that shim directly; we expose the ones that live here.
 __all__ = ["VERSION", "USAGE", "build_parser", "main"]
 
+# Noun-first → verb-first argv translation. New syntax is thin sugar:
+# only leading tokens move, all flags pass through verbatim, so each noun
+# verb reuses its legacy parser (flags, -o, pagination) with zero duplication.
+_NOUN_MAP: dict[tuple[str, ...], list[str]] = {
+    ("secret", "list"): ["get", "secrets"],
+    ("secret", "get"): ["get", "secret"],
+    ("secret", "set"): ["apply", "secret"],
+    ("secret", "delete"): ["delete", "secret"],
+    ("secret", "reveal"): ["reveal", "secret"],
+    ("secret", "history"): ["get", "history"],
+    ("secret", "export"): ["export"],
+    ("folder", "list"): ["get", "folders"],
+    ("folder", "create"): ["create", "folder"],
+    ("folder", "delete"): ["delete", "folder"],
+    ("request", "list"): ["get", "requests"],
+    ("request", "approve"): ["approve"],
+    ("request", "deny"): ["deny"],
+    ("binding", "grant"): ["grant", "secret"],
+    ("binding", "revoke"): ["unbind", "secret"],
+    ("team", "list"): ["get", "teams"],
+    ("team", "get"): ["get", "team"],
+    ("team", "create"): ["create", "team"],
+    ("team", "delete"): ["delete", "team"],
+    ("team", "transfer"): ["transfer", "team"],
+    ("member", "list"): ["get", "members"],
+    ("member", "add"): ["create", "member"],
+    ("member", "remove"): ["delete", "member"],
+    ("group", "list"): ["get", "groups"],
+    ("group", "create"): ["create", "group"],
+    ("group", "delete"): ["delete", "group"],
+    ("token", "list"): ["get", "tokens"],
+    ("token", "create"): ["create", "token"],
+    ("token", "delete"): ["delete", "token"],
+    ("trash", "list"): ["get", "trash"],
+    ("trash", "restore"): ["restore", "trash"],
+    ("trash", "purge"): ["delete", "trash"],
+    ("user", "list"): ["get", "users"],
+    ("user", "get"): ["get", "user"],
+    ("audit", "list"): ["get", "audit"],
+    ("project", "list"): ["get", "projects"],
+    ("project", "get"): ["get", "project"],
+    ("project", "create"): ["create", "project"],
+    ("project", "delete"): ["delete", "project"],
+    ("project", "use"): ["project"],
+}
+_NOUNS = frozenset(n for (n, *_) in _NOUN_MAP) | {"group", "project"}
+
+
+def _rewrite_noun_first(argv: list[str]) -> list[str]:
+    """Translate noun-first argv to legacy verb-first form."""
+    if not argv or argv[0] not in _NOUNS:
+        return argv
+    # Three-token form: `group member add|remove EMAIL …`
+    if argv[0] == "group" and len(argv) > 2 and argv[1] == "member" and argv[2] in ("add", "remove"):
+        legacy = ["create" if argv[2] == "add" else "delete", "group-member"]
+        return legacy + argv[3:]
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        verbs = sorted(v for (n, v) in _NOUN_MAP if n == argv[0])
+        if argv[0] == "group":
+            verbs.append("member add|remove")
+        print(f"usage: corvus {argv[0]} ({'|'.join(verbs)}) …")
+        sys.exit(0)
+    mapped = _NOUN_MAP.get((argv[0], argv[1]))
+    if mapped is None:
+        # `corvus project NAME` is the legacy switcher, not a verb.
+        if argv[0] == "project":
+            return argv
+        verbs = sorted(v for (n, v) in _NOUN_MAP if n == argv[0])
+        if argv[0] == "group":
+            verbs.append("member add|remove")
+        sys.exit(f"unknown verb {argv[1]!r} for {argv[0]!r} (valid: {'|'.join(verbs)})")
+    return mapped + argv[2:]
+
 
 def main(argv: list[str] | None = None) -> None:
     """Dispatch the Corvus CLI.
@@ -58,7 +131,7 @@ def main(argv: list[str] | None = None) -> None:
         >>> main(["help"])  # doctest: +SKIP
         corvus 1.0.0 - command-line client …
     """
-    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _rewrite_noun_first(list(sys.argv[1:] if argv is None else argv))
     if not argv or argv[0] in ("-h", "--help"):
         print(USAGE, end="")
         sys.exit(0)

@@ -23,10 +23,40 @@ Example:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 # Global set by argument parser for truncate opt-out.
 _NO_TRUNC = False
+
+# Columns that never truncate: keys/values break copy-paste when cut
+# (e.g. ssh secret viewing). ponytail: allowlist, not per-call flags.
+_FULL_COLS = frozenset({"KEY", "VALUE"})
+
+
+def _color_enabled() -> bool:
+    """True when stdout is a TTY that wants color."""
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _c(code: str, text: str) -> str:
+    """Wrap *text* in ANSI *code* when color is enabled, else plain."""
+    if not _color_enabled():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _header(text: str) -> str:
+    return _c("1;36", text)
+
+
+def _dim(text: str) -> str:
+    return _c("2", text)
 
 
 def set_no_trunc(v: bool) -> None:
@@ -94,18 +124,19 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
     cols = list(headers)
     data = [[("" if c is None else str(c)) for c in row] for row in rows]
     widths = [len(h) for h in cols]
-    cap = 10_000 if _NO_TRUNC else 48
+    full = [h.upper() in _FULL_COLS for h in cols]
     for row in data:
         for i, cell in enumerate(row):
             if i < len(widths):
+                cap = 10_000 if (_NO_TRUNC or full[i]) else 48
                 widths[i] = max(widths[i], min(len(cell), cap))
-    print("  ".join(h.ljust(widths[i]) for i, h in enumerate(cols)))
-    print("  ".join("-" * widths[i] for i in range(len(cols))))
+    print("  ".join(_header(h.ljust(widths[i])) for i, h in enumerate(cols)))
+    print(_dim("  ".join("-" * widths[i] for i in range(len(cols)))))
     for row in data:
         cells: list[str] = []
         for i in range(len(cols)):
             cell = row[i] if i < len(row) else ""
-            if not _NO_TRUNC and len(cell) > 48:
+            if not _NO_TRUNC and not full[i] and len(cell) > 48:
                 cell = cell[:47] + "…"
             cells.append(cell.ljust(widths[i]))
         print("  ".join(cells))
@@ -443,7 +474,7 @@ def emit(obj: object, output: str) -> None:
     rows: list[list[str]] = []
     for k, v in obj.items():
         if k == "value" and output == "table":
-            v = trunc(str(v), 64)
+            v = str(v).replace("\n", "\\n")
         if k == "token":
             rows.append([k, str(v)])
         elif v is not None and not isinstance(v, (list, dict)):
